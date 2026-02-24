@@ -8,8 +8,8 @@ use std::sync::mpsc;
 use crate::components::{CanvasNode, Edge, MainCamera, Selected};
 use crate::helpers::spawn_canvas_node;
 use crate::io::{
-    camera_prefs_from_parts, save_to_path, CurrentFile, FileDialogResult, PendingFileDialog,
-    PendingLoad, WORKSPACE_PATH,
+    add_to_recent, camera_prefs_from_parts, save_to_path, workflows_dir, CurrentFile,
+    FileDialogResult, PendingFileDialog, PendingLoad, RecentFiles, WORKSPACE_PATH,
 };
 use crate::resources::SpatialIndex;
 use crate::state::InputMode;
@@ -53,7 +53,9 @@ pub fn ui_top_bar_system(
     mut contexts: EguiContexts,
     state: Res<State<InputMode>>,
     pending_dialog: ResMut<PendingFileDialog>,
-    mut current_file: ResMut<CurrentFile>,
+    mut pending_load: ResMut<PendingLoad>,
+    current_file: Res<CurrentFile>,
+    recent: Res<RecentFiles>,
     mut force_layout: ResMut<crate::layout::ForceLayoutActive>,
     node_data_query: Query<
         (Entity, &Transform, &crate::components::TextData, &crate::components::NodeColor),
@@ -76,6 +78,7 @@ pub fn ui_top_bar_system(
                         std::thread::spawn(move || {
                             if let Some(path) = rfd::FileDialog::new()
                                 .add_filter("glyph", &["glyph"])
+                                .set_directory(workflows_dir())
                                 .pick_file()
                             {
                                 let _ = tx.send(FileDialogResult::Open(path));
@@ -84,21 +87,47 @@ pub fn ui_top_bar_system(
                         *pending_dialog.0.lock().unwrap() = Some(rx);
                         ui.close();
                     }
-                    if ui.button("Save").clicked() {
-                        let path = current_file
-                            .0
-                            .clone()
-                            .unwrap_or_else(|| std::path::PathBuf::from(WORKSPACE_PATH));
-                        let cam_prefs = camera_query
-                            .single()
-                            .ok()
-                            .map(|(t, p)| camera_prefs_from_parts(t, p));
-                        match save_to_path(&path, &node_data_query, &edge_query, cam_prefs) {
-                            Ok(()) => {
-                                current_file.0 = Some(path.clone());
-                                info!("[SAVE] Saved to {}", path.display());
+                    ui.menu_button("Open Recent", |ui| {
+                        if recent.0.is_empty() {
+                            ui.label("No recent files");
+                        } else {
+                            for path in recent.0.iter() {
+                                let label = path
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or(path.to_str().unwrap_or("?"));
+                                if ui.button(label).clicked() {
+                                    pending_load.0 = Some(path.clone());
+                                    ui.close();
+                                }
                             }
-                            Err(e) => error!("[SAVE] {}", e),
+                        }
+                    });
+                    if ui.button("Save").clicked() {
+                        if current_file.0.is_none() {
+                            // Untitled: open Save As so user can choose name
+                            let (tx, rx) = mpsc::channel();
+                            std::thread::spawn(move || {
+                                if let Some(path) = rfd::FileDialog::new()
+                                    .add_filter("glyph", &["glyph"])
+                                    .set_directory(workflows_dir())
+                                    .set_file_name("untitled.glyph")
+                                    .save_file()
+                                {
+                                    let _ = tx.send(FileDialogResult::SaveAs(path));
+                                }
+                            });
+                            *pending_dialog.0.lock().unwrap() = Some(rx);
+                        } else {
+                            let path = current_file.0.clone().unwrap();
+                            let cam_prefs = camera_query
+                                .single()
+                                .ok()
+                                .map(|(t, p)| camera_prefs_from_parts(t, p));
+                            match save_to_path(&path, &node_data_query, &edge_query, cam_prefs) {
+                                Ok(()) => info!("[SAVE] Saved to {}", path.display()),
+                                Err(e) => error!("[SAVE] {}", e),
+                            }
                         }
                         ui.close();
                     }
@@ -107,6 +136,7 @@ pub fn ui_top_bar_system(
                         std::thread::spawn(move || {
                             if let Some(path) = rfd::FileDialog::new()
                                 .add_filter("glyph", &["glyph"])
+                                .set_directory(workflows_dir())
                                 .set_file_name("untitled.glyph")
                                 .save_file()
                             {
@@ -164,6 +194,7 @@ pub fn process_pending_file_dialog_system(
     pending_dialog: ResMut<PendingFileDialog>,
     mut pending_load: ResMut<PendingLoad>,
     mut current_file: ResMut<CurrentFile>,
+    mut recent: ResMut<RecentFiles>,
     node_data_query: Query<
         (Entity, &Transform, &crate::components::TextData, &crate::components::NodeColor),
         With<CanvasNode>,
@@ -194,6 +225,7 @@ pub fn process_pending_file_dialog_system(
             match save_to_path(&path, &node_data_query, &edge_query, cam_prefs) {
                 Ok(()) => {
                     current_file.0 = Some(path.clone());
+                    add_to_recent(&mut recent, path.clone());
                     info!("[SAVE] Saved to {}", path.display());
                 }
                 Err(e) => error!("[SAVE] {}", e),
@@ -327,9 +359,11 @@ pub fn ui_command_palette_system(
                 }
             } else if show("open") && ui.button("Open file...").clicked() {
                 let (tx, rx) = mpsc::channel();
+                let start_dir = workflows_dir();
                 std::thread::spawn(move || {
                     if let Some(path) = rfd::FileDialog::new()
                         .add_filter("glyph", &["glyph"])
+                        .set_directory(start_dir)
                         .pick_file()
                     {
                         let _ = tx.send(FileDialogResult::Open(path));

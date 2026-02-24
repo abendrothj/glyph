@@ -26,7 +26,7 @@ use egui_overlay::{
     ui_top_bar_system, CommandPaletteState,
 };
 use input::{standard_mode_system, vim_insert_system, vim_normal_system, PendingDDelete};
-use io::{load_canvas_system, process_pending_load_system, save_canvas_system, CurrentFile, PendingLoad};
+use io::{load_canvas_system, load_recent, process_pending_load_system, save_canvas_system, workflows_dir, CurrentFile, PendingLoad, RecentFiles};
 use layout::{force_directed_layout_system, ForceLayoutActive};
 use rendering::{
     draw_edges_system, draw_selection_system, sync_edge_labels_system, sync_text_system,
@@ -69,6 +69,11 @@ pub fn run() {
         .init_resource::<io::PendingFileDialog>()
         .init_resource::<PendingLoad>()
         .init_resource::<ForceLayoutActive>()
+        .init_resource::<RecentFiles>()
+        .add_systems(Startup, |mut recent: ResMut<RecentFiles>| {
+            let _ = workflows_dir(); // ensure workflows folder exists
+            recent.0 = load_recent();
+        })
         .add_message::<crawler::CrawlRequest>()
         .add_systems(Startup, (setup_canvas, setup_gizmo_line_width))
         .add_systems(OnEnter(InputMode::VimEasymotion), jump_tag_setup)

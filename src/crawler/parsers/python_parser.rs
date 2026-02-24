@@ -104,3 +104,42 @@ impl LanguageParser for PythonParser {
         graph
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_empty_returns_empty() {
+        let p = PythonParser::new();
+        assert!(p.parse("").is_empty());
+    }
+
+    #[test]
+    fn parse_single_function_no_calls() {
+        let p = PythonParser::new();
+        let code = r#"
+def foo():
+    pass
+"#;
+        let g = p.parse(code);
+        assert!(g.contains_key("foo"));
+        assert!(g.get("foo").unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_function_calling_another() {
+        let p = PythonParser::new();
+        let code = r#"
+def bar():
+    pass
+
+def foo():
+    bar()
+"#;
+        let g = p.parse(code);
+        assert!(g.contains_key("foo"));
+        assert!(g.contains_key("bar"));
+        assert_eq!(g.get("foo").unwrap(), &vec!["bar".to_string()]);
+    }
+}

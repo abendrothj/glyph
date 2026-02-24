@@ -3,7 +3,7 @@
 use bevy::prelude::*;
 use glyph::components::{CanvasNode, Edge, MainCamera, NodeColor, TextData};
 use glyph::helpers::spawn_node_with_color;
-use glyph::io::{process_pending_load_system, save_to_path, CurrentFile, PendingLoad};
+use glyph::io::{process_pending_load_system, save_to_path, CurrentFile, PendingLoad, RecentFiles};
 use glyph::resources::SpatialIndex;
 use glyph::spatial::{spatial_index_cleanup_system, update_spatial_index_system};
 use std::fs;
@@ -18,6 +18,7 @@ fn io_test_app() -> App {
         .init_resource::<SpatialIndex>()
         .init_resource::<CurrentFile>()
         .init_resource::<PendingLoad>()
+        .init_resource::<RecentFiles>()
         .init_resource::<TestSavePath>()
         .add_systems(Startup, |mut commands: Commands| {
             let n1 = spawn_node_with_color(&mut commands, 100.0, 200.0, "hello", Color::srgb(0.5, 0.6, 0.7));
@@ -99,4 +100,8 @@ fn e2e_load_restores_nodes_and_edges() {
     let edges: Vec<_> = world.query::<&Edge>().iter(world).collect();
     assert_eq!(edges.len(), 1);
     assert_eq!(edges[0].label.as_deref(), Some("calls"));
+
+    let recent = world.resource::<glyph::io::RecentFiles>();
+    assert!(!recent.0.is_empty());
+    assert_eq!(recent.0[0], path);
 }
