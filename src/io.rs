@@ -101,12 +101,28 @@ fn is_save_modifier_pressed(keys: &ButtonInput<KeyCode>) -> bool {
         || keys.pressed(KeyCode::SuperRight)
 }
 
+/// Extract camera prefs from (Transform, Projection) for serialization.
+pub fn camera_prefs_from_parts(
+    transform: &Transform,
+    proj: &Projection,
+) -> SerializedCameraPrefs {
+    let scale = match proj {
+        Projection::Orthographic(o) => o.scale,
+        _ => 1.0,
+    };
+    SerializedCameraPrefs {
+        x: transform.translation.x,
+        y: transform.translation.y,
+        scale,
+    }
+}
+
 /// Core save logic — writes to the given path.
 pub fn save_to_path(
     path: &Path,
     node_query: &Query<(Entity, &Transform, &TextData, &NodeColor), With<CanvasNode>>,
     edge_query: &Query<&Edge>,
-    camera_query: &Query<(&Transform, &Projection), With<MainCamera>>,
+    camera_prefs: Option<SerializedCameraPrefs>,
 ) -> Result<(), String> {
     let mut entity_to_id = HashMap::new();
     let mut nodes = Vec::new();
@@ -140,20 +156,7 @@ pub fn save_to_path(
         });
     }
 
-    let camera = camera_query
-        .single()
-        .ok()
-        .map(|(transform, proj)| {
-            let scale = match proj {
-                Projection::Orthographic(o) => o.scale,
-                _ => 1.0,
-            };
-            SerializedCameraPrefs {
-                x: transform.translation.x,
-                y: transform.translation.y,
-                scale,
-            }
-        });
+    let camera = camera_prefs;
     let snapshot = CanvasSnapshot {
         nodes,
         edges,
@@ -243,7 +246,11 @@ pub fn save_canvas_system(
         .clone()
         .unwrap_or_else(|| std::path::PathBuf::from(WORKSPACE_PATH));
 
-    match save_to_path(&path, &node_query, &edge_query, &camera_query) {
+    let cam_prefs = camera_query
+        .single()
+        .ok()
+        .map(|(t, p)| camera_prefs_from_parts(t, p));
+    match save_to_path(&path, &node_query, &edge_query, cam_prefs) {
         Ok(()) => {
             current_file.0 = Some(path.clone());
             info!("[SAVE] Saved to {}", path.display());

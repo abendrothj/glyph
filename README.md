@@ -38,8 +38,8 @@ cargo run --release
 - [x] Phase 5: Infinite Scaling (O(1) Spatial Hash Grid, Viewport Culling).
 - [x] Phase 6: Serialization (Local offline .glyph save/load state hydration).
 - [x] Phase 7: Immediate-Mode UI (Command Palette, visual toolbars via bevy_egui).
-- [ ] Phase 8: WebAssembly compilation for frictionless browser demos.
-- [ ] Phase 9: AST Crawler (Drag-and-drop a codebase to auto-generate a navigable spatial call-graph).
+- [ ] Phase 8: AST Crawler (Crawl a codebase to auto-generate a navigable spatial call-graph).
+- [ ] Phase 9: WebAssembly compilation for frictionless browser demos.
 
 ## 🤝 Contributing
 

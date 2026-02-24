@@ -8,7 +8,8 @@ use std::sync::mpsc;
 use crate::components::{CanvasNode, Edge, MainCamera, Selected};
 use crate::helpers::spawn_canvas_node;
 use crate::io::{
-    save_to_path, CurrentFile, FileDialogResult, PendingFileDialog, PendingLoad, WORKSPACE_PATH,
+    camera_prefs_from_parts, save_to_path, CurrentFile, FileDialogResult, PendingFileDialog,
+    PendingLoad, WORKSPACE_PATH,
 };
 use crate::resources::SpatialIndex;
 use crate::state::InputMode;
@@ -98,7 +99,11 @@ pub fn ui_top_bar_system(
                             .0
                             .clone()
                             .unwrap_or_else(|| std::path::PathBuf::from(WORKSPACE_PATH));
-                        match save_to_path(&path, &node_data_query, &edge_query, &camera_query) {
+                        let cam_prefs = camera_query
+                            .single()
+                            .ok()
+                            .map(|(t, p)| camera_prefs_from_parts(t, p));
+                        match save_to_path(&path, &node_data_query, &edge_query, cam_prefs) {
                             Ok(()) => {
                                 current_file.0 = Some(path.clone());
                                 info!("[SAVE] Saved to {}", path.display());
@@ -182,7 +187,11 @@ pub fn process_pending_file_dialog_system(
         Ok(FileDialogResult::SaveAs(path)) => {
             *guard = None;
             drop(guard);
-            match save_to_path(&path, &node_data_query, &edge_query, &camera_query) {
+            let cam_prefs = camera_query
+                .single()
+                .ok()
+                .map(|(t, p)| camera_prefs_from_parts(t, p));
+            match save_to_path(&path, &node_data_query, &edge_query, cam_prefs) {
                 Ok(()) => {
                     current_file.0 = Some(path.clone());
                     info!("[SAVE] Saved to {}", path.display());
@@ -220,8 +229,11 @@ pub fn ui_command_palette_system(
     >,
     selected_q: Query<Entity, With<Selected>>,
     window_q: Query<&Window, With<PrimaryWindow>>,
-    camera_query: Query<(&Transform, &Projection), With<MainCamera>>,
-    camera_viewport_q: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    camera_full_q: Query<
+        (&Transform, &Projection, &Camera, &GlobalTransform),
+        With<MainCamera>,
+    >,
+    mut pending_crawl: ResMut<crate::crawler::PendingCrawl>,
 ) {
     if !palette.is_open {
         return;
@@ -243,11 +255,23 @@ pub fn ui_command_palette_system(
             ui.add_space(8.0);
             let response = ui.add(
                 egui::TextEdit::singleline(&mut palette.search_query)
-                    .hint_text("Search commands...")
+                    .hint_text("Search commands... or type 'crawl ./src' + Enter")
                     .desired_width(f32::INFINITY),
             );
             if !response.has_focus() {
                 response.request_focus();
+            }
+            // Parse "crawl <path>" from search bar when Enter is pressed
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                let q = palette.search_query.trim();
+                if q.starts_with("crawl ") {
+                    let path = q["crawl ".len()..].trim().to_string();
+                    if !path.is_empty() {
+                        pending_crawl.0 = Some(path);
+                        palette.search_query.clear();
+                        palette.is_open = false;
+                    }
+                }
             }
             ui.add_space(16.0);
 
@@ -259,7 +283,11 @@ pub fn ui_command_palette_system(
                     .0
                     .clone()
                     .unwrap_or_else(|| std::path::PathBuf::from(WORKSPACE_PATH));
-                match save_to_path(&path, &node_data_query, &edge_queries.p1(), &camera_query) {
+                let cam_prefs = camera_full_q
+                .single()
+                .ok()
+                .map(|(t, p, _, _)| camera_prefs_from_parts(t, p));
+                match save_to_path(&path, &node_data_query, &edge_queries.p1(), cam_prefs) {
                     Ok(()) => {
                         current_file.0 = Some(path.clone());
                         info!("[SAVE] Saved to {}", path.display());
@@ -317,7 +345,7 @@ pub fn ui_command_palette_system(
                 let pos = window_q.single().ok().and_then(|w| {
                     let size = w.resolution.physical_size();
                     let center = Vec2::new(size.x as f32 / 2.0, size.y as f32 / 2.0);
-                    let (cam, xform) = camera_viewport_q.single().ok()?;
+                    let (_, _, cam, xform) = camera_full_q.single().ok()?;
                     cam.viewport_to_world_2d(xform, center).ok()
                 }).unwrap_or(Vec2::ZERO);
                 spawn_canvas_node(&mut commands, pos, "", true);
@@ -398,6 +426,17 @@ pub fn ui_command_palette_system(
                         );
                     });
                 }
+            }
+
+            if !q.is_empty() && q.contains("crawl") {
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("Crawl: type \"crawl ./src\" (or any path) and press Enter. Uses tree-sitter AST (Rust MVP; py/ts extensible).")
+                        .color(egui::Color32::GRAY)
+                        .small(),
+                );
             }
         });
 

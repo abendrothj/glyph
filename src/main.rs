@@ -2,6 +2,7 @@
 
 mod camera;
 mod components;
+mod crawler;
 mod easymotion;
 mod egui_overlay;
 mod helpers;
@@ -64,6 +65,7 @@ fn main() {
         .init_resource::<egui_overlay::EdgeLabelEditBuffer>()
         .init_resource::<io::PendingFileDialog>()
         .init_resource::<PendingLoad>()
+        .init_resource::<crawler::PendingCrawl>()
         .add_systems(Startup, (setup_canvas, setup_gizmo_line_width))
         .add_systems(OnEnter(InputMode::VimEasymotion), jump_tag_setup)
         .add_systems(OnExit(InputMode::VimEasymotion), jump_tag_cleanup)
@@ -87,6 +89,7 @@ fn main() {
                     .run_if(vim_input_available)
                     .run_if(not(egui_wants_any_keyboard_input)),
                 process_pending_load_system,
+                crawler::process_crawl_request_system,
                 mouse_selection_system,
                 node_drag_system
                     .run_if(in_state(InputMode::Standard))
