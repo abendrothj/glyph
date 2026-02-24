@@ -4,6 +4,8 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
 use crate::components::{CanvasNode, Dragging, Edge, MainCamera, Selected};
+use crate::rendering::{edge_label_world_pos, LABEL_HIT_HALF};
+use crate::resources::SelectedEdge;
 use crate::helpers::spawn_canvas_node;
 use crate::state::InputMode;
 
@@ -57,6 +59,7 @@ const DBL_CLICK_DIST: f32 = 25.0;
 ///   1. Clears the previous selection.
 ///   2. Inserts `Selected` and `Dragging { offset }` on the clicked entity.
 ///   3. Transitions to `Standard` mode.
+/// Click on edge label area selects that edge for inline label editing.
 /// A click on empty canvas deselects.
 pub fn mouse_selection_system(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
@@ -66,7 +69,10 @@ pub fn mouse_selection_system(
     camera_q: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
     mut commands: Commands,
     mut last_empty: ResMut<LastEmptyClick>,
+    mut selected_edge: ResMut<SelectedEdge>,
     node_query: Query<(Entity, &Transform), With<CanvasNode>>,
+    edge_query: Query<(Entity, &Edge)>,
+    node_transform_query: Query<&Transform, With<CanvasNode>>,
     selected_q: Query<Entity, With<Selected>>,
     dragging_q: Query<Entity, With<Dragging>>,
     mut next_state: ResMut<NextState<InputMode>>,
@@ -94,6 +100,48 @@ pub fn mouse_selection_system(
 
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
 
+    // Edge label hit-test first (before nodes). Click on label area selects edge for inline editing.
+    let mut groups: std::collections::HashMap<(Entity, Entity), Vec<Entity>> =
+        std::collections::HashMap::new();
+    for (entity, edge) in &edge_query {
+        groups
+            .entry((edge.source, edge.target))
+            .or_default()
+            .push(entity);
+    }
+    let mut idx_map: std::collections::HashMap<Entity, usize> = std::collections::HashMap::new();
+    for (_, entities) in &groups {
+        for (i, e) in entities.iter().enumerate() {
+            idx_map.insert(*e, i);
+        }
+    }
+    for (edge_entity, edge) in &edge_query {
+        let Ok(src) = node_transform_query.get(edge.source) else {
+            continue;
+        };
+        let Ok(tgt) = node_transform_query.get(edge.target) else {
+            continue;
+        };
+        let idx = idx_map.get(&edge_entity).copied().unwrap_or(0);
+        let (label_pos, _) = edge_label_world_pos(src, tgt, idx);
+        if world_pos.x >= label_pos.x - LABEL_HIT_HALF.x
+            && world_pos.x <= label_pos.x + LABEL_HIT_HALF.x
+            && world_pos.y >= label_pos.y - LABEL_HIT_HALF.y
+            && world_pos.y <= label_pos.y + LABEL_HIT_HALF.y
+        {
+            for prev in &selected_q {
+                commands.entity(prev).remove::<Selected>();
+            }
+            for prev in &dragging_q {
+                commands.entity(prev).remove::<Dragging>();
+            }
+            selected_edge.0 = Some(edge_entity);
+            next_state.set(InputMode::Standard);
+            info!("[SELECT] edge {:?} for label edit", edge_entity);
+            return;
+        }
+    }
+
     for (entity, transform) in &node_query {
         let node_pos = transform.translation.truncate();
         if world_pos.x >= node_pos.x - NODE_HALF.x
@@ -104,10 +152,12 @@ pub fn mouse_selection_system(
             if shift {
                 // Shift+click: start edge drawing instead of node drag
                 commands.insert_resource(DrawingEdge(Some(entity)));
+                selected_edge.0 = None;
                 info!("[EDGE] start draw from {:?}", entity);
                 return;
             }
 
+            selected_edge.0 = None;
             for prev in &selected_q {
                 commands.entity(prev).remove::<Selected>();
             }
@@ -127,6 +177,7 @@ pub fn mouse_selection_system(
     }
 
     // Click on empty space: double-click creates node, single-click deselects
+    selected_edge.0 = None;
     let now = time.elapsed_secs_f64() * 1000.0;
     let is_double = (now - last_empty.time) < DBL_CLICK_MS
         && world_pos.distance(last_empty.pos) < DBL_CLICK_DIST;

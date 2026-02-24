@@ -4,7 +4,9 @@ use std::collections::HashMap;
 use std::path::Path;
 use walkdir::WalkDir;
 
+use super::parsers::python_parser::PythonParser;
 use super::parsers::rust_parser::RustParser;
+use super::parsers::typescript_parser::TypeScriptParser;
 use super::LanguageParser;
 
 /// Call graph: caller -> list of callees.
@@ -24,6 +26,8 @@ impl CrawlerRouter {
         }
 
         let rust_parser = RustParser::new();
+        let python_parser = PythonParser::new();
+        let typescript_parser = TypeScriptParser::new();
 
         for entry in WalkDir::new(root_path)
             .follow_links(true)
@@ -39,10 +43,8 @@ impl CrawlerRouter {
 
             let parser: Option<&dyn LanguageParser> = match ext.as_str() {
                 "rs" => Some(&rust_parser),
-                "py" | "ts" => {
-                    // Placeholder: add PythonParser, TypeScriptParser when implemented
-                    continue;
-                }
+                "py" => Some(&python_parser),
+                "ts" | "tsx" => Some(&typescript_parser),
                 _ => continue,
             };
 
@@ -95,5 +97,28 @@ pub fn public_api() { helper(); }
         assert!(g.contains_key("public_api"));
         assert!(g.contains_key("helper"));
         assert_eq!(g.get("public_api").unwrap(), &vec!["helper".to_string()]);
+    }
+
+    #[test]
+    fn crawl_directory_with_python_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path();
+
+        fs::write(
+            dir_path.join("main.py"),
+            r#"
+def bar():
+    pass
+
+def foo():
+    bar()
+"#,
+        )
+        .unwrap();
+
+        let g = CrawlerRouter::crawl(dir_path.to_str().unwrap());
+        assert!(g.contains_key("foo"));
+        assert!(g.contains_key("bar"));
+        assert_eq!(g.get("foo").unwrap(), &vec!["bar".to_string()]);
     }
 }

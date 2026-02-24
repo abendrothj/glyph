@@ -121,7 +121,7 @@ pub fn camera_prefs_from_parts(
 pub fn save_to_path(
     path: &Path,
     node_query: &Query<(Entity, &Transform, &TextData, &NodeColor), With<CanvasNode>>,
-    edge_query: &Query<&Edge>,
+    edge_query: &Query<(Entity, &Edge)>,
     camera_prefs: Option<SerializedCameraPrefs>,
 ) -> Result<(), String> {
     let mut entity_to_id = HashMap::new();
@@ -142,7 +142,7 @@ pub fn save_to_path(
     }
 
     let mut edges = Vec::new();
-    for edge in edge_query {
+    for (_, edge) in edge_query {
         let Some(&source_id) = entity_to_id.get(&edge.source) else {
             continue;
         };
@@ -234,7 +234,7 @@ pub fn save_canvas_system(
     keys: Res<ButtonInput<KeyCode>>,
     mut current_file: ResMut<CurrentFile>,
     node_query: Query<(Entity, &Transform, &TextData, &NodeColor), With<CanvasNode>>,
-    edge_query: Query<&Edge>,
+    edge_query: Query<(Entity, &Edge)>,
     camera_query: Query<(&Transform, &Projection), With<MainCamera>>,
 ) {
     if !keys.just_pressed(KeyCode::KeyS) || !is_save_modifier_pressed(&keys) {
@@ -284,6 +284,48 @@ pub fn process_pending_load_system(
     ) {
         Ok(()) => info!("[LOAD] Loaded from {}", path.display()),
         Err(e) => error!("[LOAD] {}", e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canvas_snapshot_roundtrip() {
+        let snapshot = CanvasSnapshot {
+            nodes: vec![
+                SerializableNode {
+                    id: 0,
+                    x: 10.0,
+                    y: 20.0,
+                    text: "node1".to_string(),
+                    color: SerializedColor { r: 0.5, g: 0.6, b: 0.7 },
+                },
+                SerializableNode {
+                    id: 1,
+                    x: 100.0,
+                    y: 200.0,
+                    text: "node2".to_string(),
+                    color: SerializedColor { r: 0.7, g: 0.85, b: 0.95 },
+                },
+            ],
+            edges: vec![SerializableEdge {
+                source_id: 0,
+                target_id: 1,
+                label: Some("calls".to_string()),
+            }],
+            camera: Some(SerializedCameraPrefs {
+                x: 0.0,
+                y: 0.0,
+                scale: 1.0,
+            }),
+        };
+        let json = serde_json::to_string_pretty(&snapshot).unwrap();
+        let loaded: CanvasSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.nodes.len(), 2);
+        assert_eq!(loaded.nodes[0].text, "node1");
+        assert_eq!(loaded.edges[0].label.as_deref(), Some("calls"));
     }
 }
 

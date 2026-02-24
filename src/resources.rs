@@ -20,6 +20,10 @@ pub struct SpatialIndex {
     entity_to_cell: HashMap<Entity, (i32, i32)>,
 }
 
+/// The edge entity currently selected for label editing. Cleared when selecting a node or empty space.
+#[derive(Resource, Default)]
+pub struct SelectedEdge(pub Option<Entity>);
+
 impl SpatialIndex {
     pub fn world_to_cell(translation: Vec3) -> (i32, i32) {
         (
@@ -70,5 +74,49 @@ impl SpatialIndex {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entity(i: u32) -> Entity {
+        Entity::from_bits(i as u64)
+    }
+
+    #[test]
+    fn world_to_cell() {
+        assert_eq!(SpatialIndex::world_to_cell(Vec3::ZERO), (0, 0));
+        assert_eq!(SpatialIndex::world_to_cell(Vec3::new(CELL_SIZE, 0.0, 0.0)), (1, 0));
+        assert_eq!(SpatialIndex::world_to_cell(Vec3::new(0.0, CELL_SIZE, 0.0)), (0, 1));
+        assert_eq!(SpatialIndex::world_to_cell(Vec3::new(1500.0, -500.0, 0.0)), (1, -1));
+    }
+
+    #[test]
+    fn insert_remove_entities_in_bounds() {
+        let mut idx = SpatialIndex::default();
+        idx.insert(entity(1), (0, 0));
+        idx.insert(entity(2), (0, 0));
+        idx.insert(entity(3), (1, 0));
+
+        // Bounds (0, CELL_SIZE-1) only include cell (0,0); cell (1,0) starts at CELL_SIZE
+        let in_bounds = idx.entities_in_bounds(0.0, CELL_SIZE - 1.0, 0.0, CELL_SIZE - 1.0);
+        assert_eq!(in_bounds.len(), 2);
+        assert!(in_bounds.contains(&entity(1)));
+        assert!(in_bounds.contains(&entity(2)));
+
+        idx.remove(entity(1));
+        let in_bounds = idx.entities_in_bounds(0.0, CELL_SIZE - 1.0, 0.0, CELL_SIZE - 1.0);
+        assert_eq!(in_bounds.len(), 1);
+        assert_eq!(in_bounds[0], entity(2));
+    }
+
+    #[test]
+    fn clear() {
+        let mut idx = SpatialIndex::default();
+        idx.insert(entity(1), (0, 0));
+        idx.clear();
+        assert!(idx.entities_in_bounds(-1000.0, 1000.0, -1000.0, 1000.0).is_empty());
     }
 }

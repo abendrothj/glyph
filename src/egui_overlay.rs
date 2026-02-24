@@ -23,10 +23,6 @@ pub struct CommandPaletteState {
     pub open_path_buffer: String,
 }
 
-/// Buffer for editing edge labels in the palette. Synced from edges when palette opens.
-#[derive(Resource, Default)]
-pub struct EdgeLabelEditBuffer(pub std::collections::HashMap<bevy::prelude::Entity, String>);
-
 fn is_super_pressed(keys: &ButtonInput<KeyCode>) -> bool {
     keys.pressed(KeyCode::SuperLeft) || keys.pressed(KeyCode::SuperRight)
 }
@@ -56,14 +52,14 @@ pub fn toggle_command_palette_system(
 pub fn ui_top_bar_system(
     mut contexts: EguiContexts,
     state: Res<State<InputMode>>,
-    mut palette: ResMut<CommandPaletteState>,
     pending_dialog: ResMut<PendingFileDialog>,
     mut current_file: ResMut<CurrentFile>,
+    mut force_layout: ResMut<crate::layout::ForceLayoutActive>,
     node_data_query: Query<
         (Entity, &Transform, &crate::components::TextData, &crate::components::NodeColor),
         With<CanvasNode>,
     >,
-    edge_query: Query<&Edge>,
+    edge_query: Query<(Entity, &Edge)>,
     camera_query: Query<(&Transform, &Projection), With<MainCamera>>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
@@ -74,12 +70,6 @@ pub fn ui_top_bar_system(
         .default_height(36.0)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.menu_button("Edit", |ui| {
-                    if ui.button("Edge Labels...").clicked() {
-                        palette.is_open = true;
-                        ui.close();
-                    }
-                });
                 ui.menu_button("File", |ui| {
                     if ui.button("Open...").clicked() {
                         let (tx, rx) = mpsc::channel();
@@ -127,6 +117,12 @@ pub fn ui_top_bar_system(
                         ui.close();
                     }
                 });
+                ui.menu_button("Edit", |ui| {
+                    if ui.button(if force_layout.0 { "Force Layout: On" } else { "Force Layout: Off" }).clicked() {
+                        force_layout.0 = !force_layout.0;
+                        ui.close();
+                    }
+                });
 
                 ui.separator();
 
@@ -138,11 +134,15 @@ pub fn ui_top_bar_system(
                 };
                 ui.label(egui::RichText::new(mode_text).strong());
                 ui.add_space(8.0);
-                let hint = match state.get() {
-                    InputMode::Standard => "Esc or Ctrl+[: Vim  Shift+drag: draw edge",
-                    InputMode::VimNormal => "i f ge n a yy ce dd  hjkl",
-                    InputMode::VimInsert => "Esc or Ctrl+[  Ctrl+h: backspace",
-                    InputMode::VimEasymotion => "Type letter to jump  Esc: cancel",
+                let hint = if node_data_query.is_empty() {
+                    "Get started: n (new node)  Cmd+K (commands)  crawl ./src (call graph)"
+                } else {
+                    match state.get() {
+                        InputMode::Standard => "Esc or Ctrl+[: Vim  Shift+drag: draw edge",
+                        InputMode::VimNormal => "i f ge n a yy ce dd  hjkl",
+                        InputMode::VimInsert => "Esc or Ctrl+[  Ctrl+h: backspace",
+                        InputMode::VimEasymotion => "Type letter to jump  Esc: cancel",
+                    }
                 };
                 ui.label(egui::RichText::new(hint).color(egui::Color32::GRAY));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -168,7 +168,7 @@ pub fn process_pending_file_dialog_system(
         (Entity, &Transform, &crate::components::TextData, &crate::components::NodeColor),
         With<CanvasNode>,
     >,
-    edge_query: Query<&Edge>,
+    edge_query: Query<(Entity, &Edge)>,
     camera_query: Query<(&Transform, &Projection), With<MainCamera>>,
 ) {
     let mut guard = match pending_dialog.0.try_lock() {
@@ -217,12 +217,8 @@ pub fn ui_command_palette_system(
     mut spatial_index: ResMut<SpatialIndex>,
     mut current_file: ResMut<CurrentFile>,
     mut next_state: ResMut<NextState<crate::state::InputMode>>,
-    mut label_buffer: ResMut<EdgeLabelEditBuffer>,
     node_query: Query<Entity, With<CanvasNode>>,
-    mut edge_queries: ParamSet<(
-        Query<(Entity, &mut Edge)>,
-        Query<&Edge>,
-    )>,
+    edge_query: Query<(Entity, &Edge)>,
     node_data_query: Query<
         (Entity, &Transform, &crate::components::TextData, &crate::components::NodeColor),
         With<CanvasNode>,
@@ -233,7 +229,7 @@ pub fn ui_command_palette_system(
         (&Transform, &Projection, &Camera, &GlobalTransform),
         With<MainCamera>,
     >,
-    mut pending_crawl: ResMut<crate::crawler::PendingCrawl>,
+    mut crawl_events: MessageWriter<crate::crawler::CrawlRequest>,
 ) {
     if !palette.is_open {
         return;
@@ -261,13 +257,13 @@ pub fn ui_command_palette_system(
             if !response.has_focus() {
                 response.request_focus();
             }
-            // Parse "crawl <path>" from search bar when Enter is pressed
+            // Intercept Enter: if text starts with "crawl ", send CrawlRequest event.
             if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 let q = palette.search_query.trim();
                 if q.starts_with("crawl ") {
                     let path = q["crawl ".len()..].trim().to_string();
                     if !path.is_empty() {
-                        pending_crawl.0 = Some(path);
+                        crawl_events.write(crate::crawler::CrawlRequest { path });
                         palette.search_query.clear();
                         palette.is_open = false;
                     }
@@ -287,7 +283,7 @@ pub fn ui_command_palette_system(
                 .single()
                 .ok()
                 .map(|(t, p, _, _)| camera_prefs_from_parts(t, p));
-                match save_to_path(&path, &node_data_query, &edge_queries.p1(), cam_prefs) {
+                match save_to_path(&path, &node_data_query, &edge_query, cam_prefs) {
                     Ok(()) => {
                         current_file.0 = Some(path.clone());
                         info!("[SAVE] Saved to {}", path.display());
@@ -354,8 +350,7 @@ pub fn ui_command_palette_system(
                 info!("[CREATE] Add Node at {:?}", pos);
             } else if show("delete") && ui.button("Delete Selected Node").clicked() {
                 if let Ok(node_entity) = selected_q.single() {
-                    let to_despawn: Vec<_> = edge_queries
-                        .p0()
+                    let to_despawn: Vec<_> = edge_query
                         .iter()
                         .filter(|(_, e)| e.source == node_entity || e.target == node_entity)
                         .map(|(e, _)| e)
@@ -364,8 +359,6 @@ pub fn ui_command_palette_system(
                         commands.entity(*e).despawn();
                     }
                     commands.entity(node_entity).despawn();
-                    let set: std::collections::HashSet<_> = to_despawn.into_iter().collect();
-                    label_buffer.0.retain(|k, _| !set.contains(k));
                     palette.is_open = false;
                     info!("[DELETE] removed selected node");
                 }
@@ -373,59 +366,13 @@ pub fn ui_command_palette_system(
                 for entity in node_query.iter().collect::<Vec<_>>() {
                     commands.entity(entity).despawn();
                 }
-                for (e, _) in edge_queries.p0().iter() {
+                for (e, _) in edge_query.iter() {
                     commands.entity(e).despawn();
                 }
                 spatial_index.clear();
                 current_file.0 = None;
-                label_buffer.0.clear();
                 palette.is_open = false;
                 info!("[CLEAR] Canvas cleared");
-            }
-
-            ui.add_space(12.0);
-            ui.separator();
-            ui.add_space(8.0);
-            ui.label(egui::RichText::new("Edge Labels").strong());
-            ui.add_space(4.0);
-
-            let edges: Vec<_> = edge_queries.p0().iter().map(|(e, edge)| (e, edge.clone())).collect();
-            if edges.is_empty() {
-                ui.label(egui::RichText::new("No edges. Shift+drag between nodes to create.").color(egui::Color32::GRAY));
-            } else {
-                for (edge_entity, edge) in &edges {
-                    let src_name = node_data_query
-                        .get(edge.source)
-                        .map(|(_, _, t, _)| t.content.as_str())
-                        .unwrap_or("?");
-                    let tgt_name = node_data_query
-                        .get(edge.target)
-                        .map(|(_, _, t, _)| t.content.as_str())
-                        .unwrap_or("?");
-                    let label_str = edge.label.as_deref().unwrap_or("");
-                    let edge_match = q.is_empty()
-                        || src_name.to_lowercase().contains(&q)
-                        || tgt_name.to_lowercase().contains(&q)
-                        || label_str.to_lowercase().contains(&q);
-                    if !edge_match {
-                        continue;
-                    }
-                    if !label_buffer.0.contains_key(edge_entity) {
-                        label_buffer.0.insert(
-                            *edge_entity,
-                            edge.label.as_deref().unwrap_or("").to_string(),
-                        );
-                    }
-                    let label = label_buffer.0.get_mut(edge_entity).unwrap();
-                    ui.horizontal(|ui| {
-                        ui.label(format!("{} → {}:", src_name, tgt_name));
-                        ui.add(
-                            egui::TextEdit::singleline(label)
-                                .desired_width(120.0)
-                                .hint_text("label"),
-                        );
-                    });
-                }
             }
 
             if !q.is_empty() && q.contains("crawl") {
@@ -439,14 +386,4 @@ pub fn ui_command_palette_system(
                 );
             }
         });
-
-    for (edge_entity, new_label) in &label_buffer.0 {
-        if let Ok((_, mut edge)) = edge_queries.p0().get_mut(*edge_entity) {
-            edge.label = if new_label.is_empty() {
-                None
-            } else {
-                Some(new_label.clone())
-            };
-        }
-    }
 }

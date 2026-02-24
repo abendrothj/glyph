@@ -5,7 +5,8 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
 use crate::components::{Edge, NodeColor, Selected, TextData};
-use crate::egui_overlay::CommandPaletteState;
+use crate::easymotion::EasymotionTarget;
+use crate::resources::SelectedEdge;
 use crate::helpers::{delete_node, spawn_node_with_color, spawn_canvas_node};
 use crate::state::InputMode;
 
@@ -34,7 +35,7 @@ fn viewport_center_world(
 #[derive(Resource, Default)]
 pub struct PendingDDelete(pub bool);
 
-/// Tracks ge sequence: g then e opens Edge Labels.
+/// Tracks ge sequence: g then e → easymotion for edge label edit.
 #[derive(Resource, Default)]
 pub struct PendingGE(pub bool);
 
@@ -71,7 +72,7 @@ pub fn vim_normal_system(
     time: Res<Time>,
     mut next_state: ResMut<NextState<InputMode>>,
     mut commands: Commands,
-    mut palette: ResMut<CommandPaletteState>,
+    mut selected_edge: ResMut<SelectedEdge>,
     mut query: Query<(Entity, &mut Transform, &TextData, &NodeColor), With<Selected>>,
     mut pending_dd: ResMut<PendingDDelete>,
     mut pending_ge: ResMut<PendingGE>,
@@ -82,11 +83,15 @@ pub fn vim_normal_system(
     window_q: Query<&Window, With<PrimaryWindow>>,
     camera_q: Query<(&Camera, &GlobalTransform), With<crate::components::MainCamera>>,
 ) {
-    // dd or Delete/Backspace: delete selected node
+    // dd or Delete/Backspace: delete selected edge (if SelectedEdge) or selected node
     if keys.just_pressed(KeyCode::KeyD) {
         if pending_dd.0 {
             pending_dd.0 = false;
-            if let Ok((entity, ..)) = query.single() {
+            if let Some(edge_entity) = selected_edge.0 {
+                commands.entity(edge_entity).despawn();
+                selected_edge.0 = None;
+                info!("[DELETE] dd → removed edge {:?}", edge_entity);
+            } else if let Ok((entity, ..)) = query.single() {
                 delete_node(&mut commands, entity, &edge_query);
                 info!("[DELETE] dd → removed node {:?}", entity);
             }
@@ -97,16 +102,23 @@ pub fn vim_normal_system(
     }
     if keys.just_pressed(KeyCode::Delete) || keys.just_pressed(KeyCode::Backspace) {
         pending_dd.0 = false;
-        if let Ok((entity, ..)) = query.single() {
+        if let Some(edge_entity) = selected_edge.0 {
+            commands.entity(edge_entity).despawn();
+            selected_edge.0 = None;
+            info!("[DELETE] removed edge {:?}", edge_entity);
+        } else if let Ok((entity, ..)) = query.single() {
             delete_node(&mut commands, entity, &edge_query);
             info!("[DELETE] removed node {:?}", entity);
         }
         return;
     }
-    pending_dd.0 = false;
 
     // n or N: create new node at cursor (or viewport center) — home row
     if keys.just_pressed(KeyCode::KeyN) {
+        pending_dd.0 = false;
+        pending_ge.0 = false;
+        pending_y.0 = false;
+        pending_ce.0 = false;
         let pos = cursor_world_pos(&window_q, &camera_q).unwrap_or_else(|| {
             viewport_center_world(&window_q, &camera_q).unwrap_or(Vec2::ZERO)
         });
@@ -119,8 +131,17 @@ pub fn vim_normal_system(
         return;
     }
 
-    // i: insert mode. If no selection, create node at cursor/center first.
+    // i: insert mode. If edge selected, edit its label. If node selected, edit its text. If no selection, create node first.
     if keys.just_pressed(KeyCode::KeyI) {
+        pending_dd.0 = false;
+        pending_ge.0 = false;
+        pending_y.0 = false;
+        pending_ce.0 = false;
+        if selected_edge.0.is_some() {
+            next_state.set(InputMode::VimInsert);
+            info!("→ VimInsert (edge label)");
+            return;
+        }
         if query.single_mut().is_err() {
             let pos = cursor_world_pos(&window_q, &camera_q).unwrap_or_else(|| {
                 viewport_center_world(&window_q, &camera_q).unwrap_or(Vec2::ZERO)
@@ -134,28 +155,40 @@ pub fn vim_normal_system(
     }
 
     if keys.just_pressed(KeyCode::KeyF) {
+        pending_dd.0 = false;
+        pending_ge.0 = false;
+        pending_y.0 = false;
+        pending_ce.0 = false;
+        commands.insert_resource(EasymotionTarget::Node);
         next_state.set(InputMode::VimEasymotion);
-        info!("→ VimEasymotion");
+        info!("→ VimEasymotion (nodes)");
         return;
     }
 
-    // ge: open Edge Labels (command palette). g then e.
+    // ge: easymotion for edge label edit — letters on edges, pick one → VimInsert
     if keys.just_pressed(KeyCode::KeyE) && pending_ge.0 {
+        pending_dd.0 = false;
+        pending_y.0 = false;
         pending_ge.0 = false;
-        palette.is_open = true;
-        palette.search_query.clear();
-        info!("[VIM] ge → Edge Labels");
+        pending_ce.0 = false;
+        commands.insert_resource(EasymotionTarget::EdgeLabel);
+        next_state.set(InputMode::VimEasymotion);
+        info!("→ VimEasymotion (edge labels)");
         return;
     }
     if keys.just_pressed(KeyCode::KeyG) {
+        pending_dd.0 = false;
+        pending_y.0 = false;
         pending_ce.0 = false;
         pending_ge.0 = true;
         return;
     }
-    pending_ge.0 = false;
 
     // yy: duplicate selected node
     if keys.just_pressed(KeyCode::KeyY) {
+        pending_dd.0 = false;
+        pending_ge.0 = false;
+        pending_ce.0 = false;
         if pending_y.0 {
             pending_y.0 = false;
             if let Ok((entity, transform, text_data, node_color)) = query.single() {
@@ -176,27 +209,34 @@ pub fn vim_normal_system(
         }
         return;
     }
-    pending_y.0 = false;
 
-    // ce: connect selected to existing (enters easymotion to pick target)
+    // ce: connect selected to existing (enters easymotion to pick target node)
     if keys.just_pressed(KeyCode::KeyE) && pending_ce.0 {
+        pending_dd.0 = false;
+        pending_ge.0 = false;
         pending_ce.0 = false;
         if let Ok((source_entity, ..)) = query.single() {
             commands.insert_resource(EasymotionConnectSource(Some(source_entity)));
+            commands.insert_resource(EasymotionTarget::Node);
             next_state.set(InputMode::VimEasymotion);
             info!("[VIM] ce → connect to...");
         }
         return;
     }
     if keys.just_pressed(KeyCode::KeyC) {
+        pending_dd.0 = false;
         pending_ge.0 = false;
+        pending_y.0 = false;
         pending_ce.0 = true;
         return;
     }
-    pending_ce.0 = false;
 
     // a: add edge + new node (requires selection)
     if keys.just_pressed(KeyCode::KeyA) {
+        pending_dd.0 = false;
+        pending_ge.0 = false;
+        pending_y.0 = false;
+        pending_ce.0 = false;
         if let Ok((source_entity, source_transform, ..)) = query.single_mut() {
             let new_pos = (source_transform.translation + Vec3::new(200.0, 0.0, 0.0)).truncate();
             commands.entity(source_entity).remove::<Selected>();
@@ -221,6 +261,10 @@ pub fn vim_normal_system(
         || keys.pressed(KeyCode::KeyK)
         || keys.pressed(KeyCode::KeyJ);
     if moving {
+        pending_dd.0 = false;
+        pending_ge.0 = false;
+        pending_y.0 = false;
+        pending_ce.0 = false;
         hjkl_hold.0 += time.delta_secs();
     } else {
         hjkl_hold.0 = 0.0;
@@ -246,12 +290,15 @@ pub fn vim_normal_system(
 
 /// VimInsert: capture typed text via ButtonInput<Key>. Ctrl+[ and Ctrl+h are home-row Esc/Backspace.
 /// Hold Backspace/Ctrl+h for repeat delete.
+/// Edits node TextData when a node is selected, or Edge.label when an edge is selected.
 pub fn vim_insert_system(
     keys: Res<ButtonInput<Key>>,
     keycodes: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     mut backspace_hold: ResMut<BackspaceHoldTime>,
     mut next_state: ResMut<NextState<InputMode>>,
+    selected_edge: Res<SelectedEdge>,
+    mut edge_query: Query<&mut Edge>,
     mut query: Query<&mut TextData, With<Selected>>,
 ) {
     let ctrl = keycodes.pressed(KeyCode::ControlLeft) || keycodes.pressed(KeyCode::ControlRight);
@@ -260,12 +307,60 @@ pub fn vim_insert_system(
     if keys.just_pressed(Key::Escape)
         || (ctrl && keycodes.just_pressed(KeyCode::BracketLeft))
     {
+        if let Some(edge_entity) = selected_edge.0 {
+            if let Ok(mut edge) = edge_query.get_mut(edge_entity) {
+                if edge.label.as_deref() == Some("") {
+                    edge.label = None;
+                }
+            }
+        }
         next_state.set(InputMode::VimNormal);
         info!("→ VimNormal");
         return;
     }
 
-    // Backspace or Ctrl+h (home-row). Hold for repeat.
+    // Editing edge label when SelectedEdge is set
+    if let Some(edge_entity) = selected_edge.0 {
+        if let Ok(mut edge) = edge_query.get_mut(edge_entity) {
+            if edge.label.is_none() {
+                edge.label = Some(String::new());
+            }
+            let label = edge.label.as_mut().unwrap();
+
+            // Backspace or Ctrl+h
+            let backspace_pressed = keys.pressed(Key::Backspace) || (ctrl && keycodes.pressed(KeyCode::KeyH));
+            let backspace_just = keys.just_pressed(Key::Backspace)
+                || (ctrl && keycodes.just_pressed(KeyCode::KeyH));
+            if backspace_pressed {
+                let mut do_delete = backspace_just;
+                if backspace_just {
+                    backspace_hold.0 = 0.0;
+                } else {
+                    backspace_hold.0 += time.delta_secs();
+                    if backspace_hold.0 >= BACKSPACE_INITIAL_DELAY {
+                        do_delete = true;
+                        backspace_hold.0 -= BACKSPACE_REPEAT_INTERVAL;
+                    }
+                }
+                if do_delete {
+                    label.pop();
+                }
+                return;
+            }
+            backspace_hold.0 = 0.0;
+
+            for key in keys.get_just_pressed() {
+                if let Key::Character(c) = key {
+                    label.push_str(c.as_str());
+                    info!("[INSERT] edge label \"{}\"", label);
+                }
+            }
+            // Normalize empty to None on next sync (we keep Some("") while editing)
+            return;
+        }
+    }
+
+    // Editing node text when a node is selected
     let backspace_pressed = keys.pressed(Key::Backspace) || (ctrl && keycodes.pressed(KeyCode::KeyH));
     let backspace_just = keys.just_pressed(Key::Backspace)
         || (ctrl && keycodes.just_pressed(KeyCode::KeyH));
@@ -299,9 +394,11 @@ pub fn vim_insert_system(
     }
 }
 
-/// Standard mode: Escape or Ctrl+[ returns to VimNormal.
+/// Standard mode: Escape or Ctrl+[ returns to VimNormal. i with SelectedEdge enters VimInsert. Delete removes selected edge.
 pub fn standard_mode_system(
     keys: Res<ButtonInput<KeyCode>>,
+    mut commands: Commands,
+    mut selected_edge: ResMut<SelectedEdge>,
     mut next_state: ResMut<NextState<InputMode>>,
 ) {
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
@@ -310,5 +407,14 @@ pub fn standard_mode_system(
     {
         next_state.set(InputMode::VimNormal);
         info!("→ VimNormal");
+    } else if keys.just_pressed(KeyCode::KeyI) && selected_edge.0.is_some() {
+        next_state.set(InputMode::VimInsert);
+        info!("→ VimInsert (edge label)");
+    } else if (keys.just_pressed(KeyCode::Delete) || keys.just_pressed(KeyCode::Backspace))
+        && selected_edge.0.is_some()
+    {
+        let edge_entity = selected_edge.0.take().unwrap();
+        commands.entity(edge_entity).despawn();
+        info!("[DELETE] removed edge {:?}", edge_entity);
     }
 }

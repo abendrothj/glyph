@@ -144,3 +144,23 @@ pub fn keycode_to_char(key: &KeyCode) -> Option<char> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keycode_to_char_letters() {
+        assert_eq!(keycode_to_char(&KeyCode::KeyA), Some('a'));
+        assert_eq!(keycode_to_char(&KeyCode::KeyZ), Some('z'));
+        assert_eq!(keycode_to_char(&KeyCode::KeyM), Some('m'));
+    }
+
+    #[test]
+    fn keycode_to_char_non_letters() {
+        assert_eq!(keycode_to_char(&KeyCode::Space), None);
+        assert_eq!(keycode_to_char(&KeyCode::Enter), None);
+        assert_eq!(keycode_to_char(&KeyCode::Escape), None);
+        assert_eq!(keycode_to_char(&KeyCode::Digit1), None);
+    }
+}

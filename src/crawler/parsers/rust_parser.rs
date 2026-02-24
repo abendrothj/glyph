@@ -5,14 +5,16 @@ use tree_sitter::StreamingIterator;
 
 use super::super::{CallGraph, LanguageParser};
 
-/// S-expression query: (1) function_item with name, (2) call_expression with function.
-/// Pattern 0: function_item name:(identifier) @fn_name
-/// Pattern 1: call_expression function:(_) @callee
+/// S-expression query: (1) function definitions, (2) direct calls, (3) method calls.
+/// Calls are associated with the function definition they reside within (containment).
 const RUST_QUERY: &str = r#"
 (function_item
   name: (identifier) @fn_name)
 (call_expression
-  function: (_) @callee)
+  function: (identifier) @call_name)
+(call_expression
+  function: (field_expression
+    field: (field_identifier) @call_name))
 "#;
 
 pub struct RustParser {
@@ -65,7 +67,7 @@ impl LanguageParser for RustParser {
         let mut calls: Vec<(usize, usize, String)> = Vec::new();
 
         let name_idx = self.query.capture_index_for_name("fn_name").unwrap_or(0);
-        let callee_idx = self.query.capture_index_for_name("callee").unwrap_or(1);
+        let call_name_idx = self.query.capture_index_for_name("call_name").unwrap_or(1);
 
         let mut cursor = QueryCursor::new();
         let mut matches = cursor.matches(&self.query, root, code.as_bytes());
@@ -84,7 +86,7 @@ impl LanguageParser for RustParser {
                         .map(|p: Node| (p.start_byte(), p.end_byte()))
                         .unwrap_or((node.start_byte(), node.end_byte()));
                     functions.push((start, end, text));
-                } else if cap.index == callee_idx {
+                } else if cap.index == call_name_idx {
                     let callee = Self::callee_text(node, code);
                     if !callee.is_empty() {
                         calls.push((node.start_byte(), node.end_byte(), callee));
