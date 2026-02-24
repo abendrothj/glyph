@@ -5,7 +5,9 @@ mod components;
 mod easymotion;
 mod helpers;
 mod input;
+mod io;
 mod rendering;
+mod ui;
 mod resources;
 mod selection;
 mod spatial;
@@ -17,6 +19,8 @@ use camera::{camera_pan_system, camera_zoom_system};
 use components::{CanvasNode, MainCamera, Selected, TextData, TextLabel};
 use easymotion::{jump_tag_cleanup, jump_tag_setup, vim_easymotion_system};
 use input::{standard_mode_system, vim_insert_system, vim_normal_system};
+use io::{load_canvas_system, save_canvas_system, CurrentFile};
+use ui::{menu_button_system, process_pending_file_dialog, spawn_menu_bar};
 use rendering::{draw_edges_system, draw_selection_system, sync_text_system};
 use resources::{JumpMap, SpatialIndex};
 use selection::{mouse_selection_system, node_drag_system, node_drop_system};
@@ -29,7 +33,9 @@ fn main() {
         .init_state::<InputMode>()
         .init_resource::<JumpMap>()
         .init_resource::<SpatialIndex>()
-        .add_systems(Startup, setup_canvas)
+        .init_resource::<CurrentFile>()
+        .init_resource::<io::PendingFileDialog>()
+        .add_systems(Startup, (setup_canvas, spawn_menu_bar))
         .add_systems(OnEnter(InputMode::VimEasymotion), jump_tag_setup)
         .add_systems(OnExit(InputMode::VimEasymotion), jump_tag_cleanup)
         .add_systems(
@@ -44,6 +50,10 @@ fn main() {
             (
                 camera_zoom_system,
                 camera_pan_system,
+                save_canvas_system,
+                load_canvas_system,
+                menu_button_system,
+                process_pending_file_dialog,
                 mouse_selection_system,
                 node_drag_system.run_if(in_state(InputMode::Standard)),
                 node_drop_system.run_if(in_state(InputMode::Standard)),

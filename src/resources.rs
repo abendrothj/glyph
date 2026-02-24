@@ -37,6 +37,12 @@ impl SpatialIndex {
             .push(entity);
     }
 
+    /// Clears the entire index. Used when loading a new canvas.
+    pub fn clear(&mut self) {
+        self.cell_to_entities.clear();
+        self.entity_to_cell.clear();
+    }
+
     pub fn remove(&mut self, entity: Entity) {
         if let Some(cell) = self.entity_to_cell.remove(&entity) {
             if let Some(entities) = self.cell_to_entities.get_mut(&cell) {
