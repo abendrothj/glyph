@@ -7,6 +7,9 @@ use std::path::Path;
 
 use crate::components::{CanvasNode, Edge, TextData, TextLabel};
 
+/// Default path for keyboard shortcut save/load when no file is open.
+pub const WORKSPACE_PATH: &str = "workspace.glyph";
+
 /// Default node color when loading files without color (backwards compat).
 const DEFAULT_NODE_COLOR: [f32; 3] = [0.70, 0.85, 0.95];
 
@@ -189,11 +192,11 @@ pub fn load_from_path(
     Ok(())
 }
 
-/// Save canvas on Ctrl+S (or Cmd+S). Uses current file or spawns Save As in background.
+/// Save canvas on Ctrl+S (or Cmd+S). Uses current file, else workspace.glyph.
+/// Menu bar Save As still opens a file dialog for multi-file.
 pub fn save_canvas_system(
     keys: Res<ButtonInput<KeyCode>>,
     mut current_file: ResMut<CurrentFile>,
-    mut pending_dialog: ResMut<PendingFileDialog>,
     node_query: Query<(Entity, &Transform, &TextData, &Sprite), With<CanvasNode>>,
     edge_query: Query<&Edge>,
 ) {
@@ -201,47 +204,49 @@ pub fn save_canvas_system(
         return;
     }
 
-    if let Some(p) = &current_file.0 {
-        let path = p.clone();
-        match save_to_path(&path, &node_query, &edge_query) {
-            Ok(()) => {
-                current_file.0 = Some(path.clone());
-                info!("[SAVE] Saved to {}", path.display());
-            }
-            Err(e) => error!("[SAVE] Failed: {}", e),
+    let path = current_file
+        .0
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from(WORKSPACE_PATH));
+
+    match save_to_path(&path, &node_query, &edge_query) {
+        Ok(()) => {
+            current_file.0 = Some(path.clone());
+            info!("[SAVE] Saved to {}", path.display());
         }
-    } else {
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            if let Some(path) = rfd::FileDialog::new()
-                .add_filter("glyph", &["glyph"])
-                .set_file_name("untitled.glyph")
-                .save_file()
-            {
-                let _ = tx.send(FileDialogResult::SaveAs(path));
-            }
-        });
-        *pending_dialog.0.lock().unwrap() = Some(rx);
+        Err(e) => error!("[SAVE] Failed: {}", e),
     }
 }
 
-/// Load canvas on Ctrl+O (or Cmd+O). Spawns file picker in background thread.
+/// Load canvas on Ctrl+O (or Cmd+O). Reads workspace.glyph directly.
+/// Menu bar Open still opens a file picker for multi-file.
 pub fn load_canvas_system(
     keys: Res<ButtonInput<KeyCode>>,
-    mut pending_dialog: ResMut<PendingFileDialog>,
+    mut commands: Commands,
+    mut spatial_index: ResMut<crate::resources::SpatialIndex>,
+    mut current_file: ResMut<CurrentFile>,
+    node_query: Query<Entity, With<CanvasNode>>,
+    edge_entity_query: Query<Entity, With<Edge>>,
 ) {
     if !keys.just_pressed(KeyCode::KeyO) || !is_save_modifier_pressed(&keys) {
         return;
     }
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("glyph", &["glyph"])
-            .pick_file()
-        {
-            let _ = tx.send(FileDialogResult::Open(path));
-        }
-    });
-    *pending_dialog.0.lock().unwrap() = Some(rx);
+    let path = std::path::Path::new(WORKSPACE_PATH);
+    if !path.exists() {
+        warn!("[LOAD] {} not found (save first with Ctrl+S / Cmd+S)", WORKSPACE_PATH);
+        return;
+    }
+
+    match load_from_path(
+        path,
+        commands,
+        spatial_index,
+        current_file,
+        &node_query,
+        &edge_entity_query,
+    ) {
+        Ok(()) => info!("[LOAD] Loaded from {}", WORKSPACE_PATH),
+        Err(e) => error!("[LOAD] Failed to deserialize: {}", e),
+    }
 }

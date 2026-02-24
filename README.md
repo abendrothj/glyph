@@ -1,0 +1,44 @@
+# Glyph
+
+> A zero-latency, bare-metal 2D whiteboard. Native Vim bindings for the keyboard, standard UI tools for the mouse. Built in Rust, powered by the Bevy engine.
+
+Glyph is an anti-Electron canvas built for developers who think spatially but refuse to leave the home row. It bridges the gap between the messy freedom of a whiteboard and the structured, lightning-fast input of a terminal editor. 
+
+By bypassing the DOM and utilizing Bevy's Entity Component System (ECS) alongside an $O(1)$ Spatial Hash Grid, Glyph handles thousands of nodes with zero input lag.
+
+## ⚡ Features
+
+* **Vim-Native Navigation:** Use `hjkl` for micro-adjustments and `f` (Easymotion) to instantly jump focus across the canvas without touching your mouse.
+* **Speed of Thought Graphing:** Hit `Shift+A` to instantly spawn, connect, and jump to a new node, dropping you directly into Insert Mode.
+* **Standard Mouse Fallback:** Fully supports middle-click panning, scroll zooming, and standard click-and-drag for times when you just want to use it like Miro.
+* **Infinite Scaling:** A dynamic spatial index ensures off-screen nodes are culled, keeping framerates pinned at 120+ FPS even with 10,000+ entities.
+* **Privacy-First (WIP):** No cloud databases. State is serialized and hydrated strictly to/from local `.glyph` files on your machine.
+
+## 🚀 Getting Started
+
+Ensure you have the Rust toolchain installed, then clone and run:
+
+```bash
+git clone https://github.com/abendrothj/glyph.git
+cd glyph
+cargo run --release
+```
+
+(Note: Running in --release mode is highly recommended for optimal Bevy rendering performance.)
+
+## 🗺️ The Roadmap
+
+- [x] Phase 1 & 2: Core ECS, State Machine (VimNormal, VimInsert, Standard), and Vim Spatial Grammar.
+- [x] Phase 3: Graphics Pipeline (Gizmo edge rendering, dynamic text syncing, state highlighting).
+- [x] Phase 4: Mouse & Camera Controls (Screen-to-world math, panning, zooming, drag-and-drop).
+- [x] Phase 5: Infinite Scaling (O(1) Spatial Hash Grid, Viewport Culling).
+- [x] Phase 6: Serialization (Local offline .glyph save/load state hydration).
+- [ ] Phase 7: Immediate-Mode UI (Command Palette, visual toolbars via bevy_egui).
+- [ ] Phase 8: WebAssembly compilation for frictionless browser demos.
+- [ ] Phase 9: AST Crawler (Drag-and-drop a codebase to auto-generate a navigable spatial call-graph).
+
+## 🤝 Contributing
+
+Contributions, issues, and feature requests are welcome!
+
+License: MIT / Apache 2.0
