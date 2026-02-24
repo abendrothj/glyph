@@ -4,8 +4,9 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
 use crate::camera::viewport_world_bounds;
-use crate::components::{CanvasNode, JumpTag, MainCamera, Selected};
+use crate::components::{CanvasNode, Edge, JumpTag, MainCamera, Selected};
 use crate::helpers::keycode_to_char;
+use crate::input::EasymotionConnectSource;
 use crate::resources::{JumpMap, SpatialIndex};
 use crate::state::InputMode;
 
@@ -40,7 +41,7 @@ pub fn jump_tag_setup(
 
         jump_map.char_to_entity.insert(tag_char, entity);
 
-        let label_pos = transform.translation + Vec3::new(0.0, 50.0, 1.0);
+        let label_pos = transform.translation + Vec3::new(0.0, -65.0, 1.0);
         commands.spawn((
             Text2d::new(tag_char.to_uppercase().to_string()),
             TextFont { font_size: 28.0, ..default() },
@@ -60,14 +61,23 @@ pub fn jump_tag_setup(
     );
 }
 
-/// in_state(VimEasymotion): one keypress teleports Selected to the tagged node.
+/// in_state(VimEasymotion): one keypress teleports Selected to the tagged node. Esc/Ctrl+[ cancels.
+/// When EasymotionConnectSource is set (ce), creates edge from source to target instead.
 pub fn vim_easymotion_system(
     keys: Res<ButtonInput<KeyCode>>,
     mut next_state: ResMut<NextState<InputMode>>,
+    mut connect_source: ResMut<EasymotionConnectSource>,
     jump_map: Res<JumpMap>,
     mut commands: Commands,
     selected_query: Query<Entity, With<Selected>>,
 ) {
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    if keys.just_pressed(KeyCode::Escape) || (ctrl && keys.just_pressed(KeyCode::BracketLeft)) {
+        connect_source.0 = None;
+        next_state.set(InputMode::VimNormal);
+        info!("[EASYMOTION] cancelled");
+        return;
+    }
     for key in keys.get_just_pressed() {
         let Some(tag_char) = keycode_to_char(key) else {
             continue;
@@ -76,13 +86,27 @@ pub fn vim_easymotion_system(
             continue;
         };
 
-        if let Ok(prev) = selected_query.single() {
-            commands.entity(prev).remove::<Selected>();
+        if let Some(source) = connect_source.0.take() {
+            if source != target {
+                commands.spawn(Edge {
+                    source,
+                    target,
+                    label: None,
+                });
+                info!("[EASYMOTION] Connected {:?} → {:?}", source, target);
+            }
+            if let Ok(prev) = selected_query.single() {
+                commands.entity(prev).remove::<Selected>();
+            }
+            commands.entity(target).insert(Selected);
+        } else {
+            if let Ok(prev) = selected_query.single() {
+                commands.entity(prev).remove::<Selected>();
+            }
+            commands.entity(target).insert(Selected);
+            info!("[EASYMOTION] Jumped to {:?} via '{}'", target, tag_char);
         }
-        commands.entity(target).insert(Selected);
-
         next_state.set(InputMode::VimNormal);
-        info!("[EASYMOTION] Jumped to {:?} via '{}'", target, tag_char);
         return;
     }
 }

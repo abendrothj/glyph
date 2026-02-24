@@ -26,12 +26,26 @@ pub struct JumpTag;
 #[derive(Component)]
 pub struct TextLabel;
 
-/// Directed edge between two CanvasNode entities.
+/// Marker on the main (foreground) sprite child of a CanvasNode.
 #[derive(Component)]
+pub struct NodeMainSprite;
+
+/// Stores the node's fill color for serialization. Synced with NodeMainSprite child.
+#[derive(Component, Clone, Copy)]
+pub struct NodeColor(pub Color);
+
+/// Directed edge between two CanvasNode entities.
+#[derive(Component, Clone)]
 pub struct Edge {
     pub source: Entity,
     pub target: Entity,
+    /// Optional label displayed along the edge path.
+    pub label: Option<String>,
 }
+
+/// Marker on the Text2d child of an Edge entity for label rendering.
+#[derive(Component)]
+pub struct EdgeLabel;
 
 /// Marker for the primary 2D camera.
 #[derive(Component)]

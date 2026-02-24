@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::components::{CanvasNode, Edge, TextData, TextLabel};
+use crate::components::{CanvasNode, Edge, MainCamera, NodeColor, TextData};
+use crate::helpers::spawn_node_with_color;
 
 /// Default path for keyboard shortcut save/load when no file is open.
 pub const WORKSPACE_PATH: &str = "workspace.glyph";
@@ -56,12 +57,23 @@ fn default_color() -> SerializedColor {
 pub struct SerializableEdge {
     pub source_id: u64,
     pub target_id: u64,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct SerializedCameraPrefs {
+    pub x: f32,
+    pub y: f32,
+    pub scale: f32,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct CanvasSnapshot {
     pub nodes: Vec<SerializableNode>,
     pub edges: Vec<SerializableEdge>,
+    #[serde(default)]
+    pub camera: Option<SerializedCameraPrefs>,
 }
 
 /// Current file path for save. None = untitled.
@@ -72,6 +84,10 @@ pub struct CurrentFile(pub Option<std::path::PathBuf>);
 /// Wrapped in Mutex because Receiver is Send but not Sync.
 #[derive(Resource, Default)]
 pub struct PendingFileDialog(pub std::sync::Mutex<Option<std::sync::mpsc::Receiver<FileDialogResult>>>);
+
+/// Deferred load path. Set by egui/file-dialog; processed in Update to avoid B0001.
+#[derive(Resource, Default)]
+pub struct PendingLoad(pub Option<std::path::PathBuf>);
 
 pub enum FileDialogResult {
     Open(std::path::PathBuf),
@@ -88,14 +104,15 @@ fn is_save_modifier_pressed(keys: &ButtonInput<KeyCode>) -> bool {
 /// Core save logic — writes to the given path.
 pub fn save_to_path(
     path: &Path,
-    node_query: &Query<(Entity, &Transform, &TextData, &Sprite), With<CanvasNode>>,
+    node_query: &Query<(Entity, &Transform, &TextData, &NodeColor), With<CanvasNode>>,
     edge_query: &Query<&Edge>,
+    camera_query: &Query<(&Transform, &Projection), With<MainCamera>>,
 ) -> Result<(), String> {
     let mut entity_to_id = HashMap::new();
     let mut nodes = Vec::new();
     let mut next_id: u64 = 0;
 
-    for (entity, transform, text_data, sprite) in node_query {
+    for (entity, transform, text_data, node_color) in node_query {
         let id = next_id;
         next_id += 1;
         entity_to_id.insert(entity, id);
@@ -104,7 +121,7 @@ pub fn save_to_path(
             x: transform.translation.x,
             y: transform.translation.y,
             text: text_data.content.clone(),
-            color: SerializedColor::from_bevy(&sprite.color),
+            color: SerializedColor::from_bevy(&node_color.0),
         });
     }
 
@@ -119,10 +136,29 @@ pub fn save_to_path(
         edges.push(SerializableEdge {
             source_id,
             target_id,
+            label: edge.label.clone(),
         });
     }
 
-    let snapshot = CanvasSnapshot { nodes, edges };
+    let camera = camera_query
+        .single()
+        .ok()
+        .map(|(transform, proj)| {
+            let scale = match proj {
+                Projection::Orthographic(o) => o.scale,
+                _ => 1.0,
+            };
+            SerializedCameraPrefs {
+                x: transform.translation.x,
+                y: transform.translation.y,
+                scale,
+            }
+        });
+    let snapshot = CanvasSnapshot {
+        nodes,
+        edges,
+        camera,
+    };
     let json = serde_json::to_string_pretty(&snapshot).map_err(|e| e.to_string())?;
     std::fs::write(path, json).map_err(|e| e.to_string())?;
     Ok(())
@@ -136,6 +172,7 @@ pub fn load_from_path(
     mut current_file: ResMut<CurrentFile>,
     node_query: &Query<Entity, With<CanvasNode>>,
     edge_entity_query: &Query<Entity, With<Edge>>,
+    camera_query: &mut Query<(&mut Transform, &mut Projection), With<MainCamera>>,
 ) -> Result<(), String> {
     let contents = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let snapshot: CanvasSnapshot = serde_json::from_str(&contents).map_err(|e| e.to_string())?;
@@ -156,25 +193,7 @@ pub fn load_from_path(
 
     for node in &snapshot.nodes {
         let color = node.color.to_bevy();
-        let entity = commands
-            .spawn((
-                Sprite::from_color(color, Vec2::new(160.0, 80.0)),
-                Transform::from_xyz(node.x, node.y, 0.0),
-                CanvasNode,
-                TextData {
-                    content: node.text.clone(),
-                },
-            ))
-            .with_children(|parent| {
-                parent.spawn((
-                    Text2d::new(node.text.clone()),
-                    TextFont { font_size: 14.0, ..default() },
-                    TextColor(Color::srgb(0.1, 0.1, 0.1)),
-                    Transform::from_xyz(0.0, 0.0, 1.0),
-                    TextLabel,
-                ));
-            })
-            .id();
+        let entity = spawn_node_with_color(&mut commands, node.x, node.y, &node.text, color);
 
         id_to_entity.insert(node.id, entity);
     }
@@ -186,7 +205,21 @@ pub fn load_from_path(
         let Some(&target) = id_to_entity.get(&edge.target_id) else {
             continue;
         };
-        commands.spawn(Edge { source, target });
+        commands.spawn(Edge {
+            source,
+            target,
+            label: edge.label.clone(),
+        });
+    }
+
+    if let Some(prefs) = &snapshot.camera {
+        if let Ok((mut transform, mut proj)) = camera_query.single_mut() {
+            transform.translation.x = prefs.x;
+            transform.translation.y = prefs.y;
+            if let Projection::Orthographic(ref mut ortho) = *proj {
+                ortho.scale = prefs.scale.clamp(0.1, 10.0);
+            }
+        }
     }
 
     Ok(())
@@ -197,8 +230,9 @@ pub fn load_from_path(
 pub fn save_canvas_system(
     keys: Res<ButtonInput<KeyCode>>,
     mut current_file: ResMut<CurrentFile>,
-    node_query: Query<(Entity, &Transform, &TextData, &Sprite), With<CanvasNode>>,
+    node_query: Query<(Entity, &Transform, &TextData, &NodeColor), With<CanvasNode>>,
     edge_query: Query<&Edge>,
+    camera_query: Query<(&Transform, &Projection), With<MainCamera>>,
 ) {
     if !keys.just_pressed(KeyCode::KeyS) || !is_save_modifier_pressed(&keys) {
         return;
@@ -209,7 +243,7 @@ pub fn save_canvas_system(
         .clone()
         .unwrap_or_else(|| std::path::PathBuf::from(WORKSPACE_PATH));
 
-    match save_to_path(&path, &node_query, &edge_query) {
+    match save_to_path(&path, &node_query, &edge_query, &camera_query) {
         Ok(()) => {
             current_file.0 = Some(path.clone());
             info!("[SAVE] Saved to {}", path.display());
@@ -218,13 +252,42 @@ pub fn save_canvas_system(
     }
 }
 
+/// Processes PendingLoad set by egui/file-dialog. Runs in Update to avoid
+/// B0001 conflict with egui systems that only need read-only camera.
+pub fn process_pending_load_system(
+    mut pending: ResMut<PendingLoad>,
+    commands: Commands,
+    spatial_index: ResMut<crate::resources::SpatialIndex>,
+    current_file: ResMut<CurrentFile>,
+    mut camera_query: Query<(&mut Transform, &mut Projection), With<MainCamera>>,
+    node_query: Query<Entity, With<CanvasNode>>,
+    edge_entity_query: Query<Entity, With<Edge>>,
+) {
+    let Some(path) = pending.0.take() else {
+        return;
+    };
+    match load_from_path(
+        &path,
+        commands,
+        spatial_index,
+        current_file,
+        &node_query,
+        &edge_entity_query,
+        &mut camera_query,
+    ) {
+        Ok(()) => info!("[LOAD] Loaded from {}", path.display()),
+        Err(e) => error!("[LOAD] {}", e),
+    }
+}
+
 /// Load canvas on Ctrl+O (or Cmd+O). Reads workspace.glyph directly.
 /// Menu bar Open still opens a file picker for multi-file.
 pub fn load_canvas_system(
     keys: Res<ButtonInput<KeyCode>>,
-    mut commands: Commands,
-    mut spatial_index: ResMut<crate::resources::SpatialIndex>,
-    mut current_file: ResMut<CurrentFile>,
+    commands: Commands,
+    spatial_index: ResMut<crate::resources::SpatialIndex>,
+    current_file: ResMut<CurrentFile>,
+    mut camera_query: Query<(&mut Transform, &mut Projection), With<MainCamera>>,
     node_query: Query<Entity, With<CanvasNode>>,
     edge_entity_query: Query<Entity, With<Edge>>,
 ) {
@@ -245,6 +308,7 @@ pub fn load_canvas_system(
         current_file,
         &node_query,
         &edge_entity_query,
+        &mut camera_query,
     ) {
         Ok(()) => info!("[LOAD] Loaded from {}", WORKSPACE_PATH),
         Err(e) => error!("[LOAD] Failed to deserialize: {}", e),

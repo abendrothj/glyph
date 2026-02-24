@@ -9,10 +9,14 @@ By bypassing the DOM and utilizing Bevy's Entity Component System (ECS) alongsid
 ## ⚡ Features
 
 * **Vim-Native Navigation:** Use `hjkl` for micro-adjustments and `f` (Easymotion) to instantly jump focus across the canvas without touching your mouse.
-* **Speed of Thought Graphing:** Hit `Shift+A` to instantly spawn, connect, and jump to a new node, dropping you directly into Insert Mode.
+* **Speed of Thought Graphing:** All home-row: `n` new node, `a` add edge + node, `yy` duplicate, `ce` connect to existing (easymotion), `ge` edge labels, `dd` delete. `Ctrl+[` for Esc, `Ctrl+h` for backspace. `hjkl` movement accelerates when held. Double-click empty space to create a node.
 * **Standard Mouse Fallback:** Fully supports middle-click panning, scroll zooming, and standard click-and-drag for times when you just want to use it like Miro.
 * **Infinite Scaling:** A dynamic spatial index ensures off-screen nodes are culled, keeping framerates pinned at 120+ FPS even with 10,000+ entities.
 * **Privacy-First (WIP):** No cloud databases. State is serialized and hydrated strictly to/from local `.glyph` files on your machine.
+
+## 📖 User Guide
+
+See **[USER_GUIDE.md](USER_GUIDE.md)** for a complete reference of keybindings, modes, and features.
 
 ## 🚀 Getting Started
 
@@ -33,7 +37,7 @@ cargo run --release
 - [x] Phase 4: Mouse & Camera Controls (Screen-to-world math, panning, zooming, drag-and-drop).
 - [x] Phase 5: Infinite Scaling (O(1) Spatial Hash Grid, Viewport Culling).
 - [x] Phase 6: Serialization (Local offline .glyph save/load state hydration).
-- [ ] Phase 7: Immediate-Mode UI (Command Palette, visual toolbars via bevy_egui).
+- [x] Phase 7: Immediate-Mode UI (Command Palette, visual toolbars via bevy_egui).
 - [ ] Phase 8: WebAssembly compilation for frictionless browser demos.
 - [ ] Phase 9: AST Crawler (Drag-and-drop a codebase to auto-generate a navigable spatial call-graph).
 
