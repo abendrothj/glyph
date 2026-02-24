@@ -22,8 +22,6 @@ pub static RUST_BUILTINS: phf::Set<&'static str> = phf_set! {
     "get", "get_mut", "insert", "remove", "contains", "push", "pop",
     "to_string", "to_owned", "borrow", "borrow_mut", "deref", "deref_mut",
     "default", "new", "from", "into", "try_into", "try_from",
-    "eq", "ne", "lt", "le", "gt", "ge", "cmp", "partial_cmp",
-    "hash", "fmt", "debug", "display", "send", "sync",
     // Bevy ECS
     "spawn", "despawn", "entity", "single", "single_mut", "iter_mut",
     "add_systems", "add_plugins", "add_system", "run_if", "in_state",

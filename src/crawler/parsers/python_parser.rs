@@ -1,38 +1,71 @@
-//! PythonParser — tree-sitter for function_definition and call.
+//! PythonParser — tree-sitter recursive walk via GenericWalker.
 
-use tree_sitter::{Language, Node, Parser, Query, QueryCursor};
-use tree_sitter::StreamingIterator;
+use tree_sitter::{Language, Parser};
 
 use super::super::{CallGraph, LanguageParser};
 use super::builtins;
+use super::walker::{walk_tree, WalkerConfig};
 
-/// Python: function_definition with name, call with function (identifier or attribute).
-const PYTHON_QUERY: &str = r#"
-(function_definition
-  name: (identifier) @fn_name)
-(call
-  function: (identifier) @call_name)
-(call
-  function: (attribute
-    attribute: (identifier) @call_name))
-"#;
+const PYTHON_CONFIG: WalkerConfig = WalkerConfig {
+    // def foo() / async def foo()  — both produce `function_definition`
+    function_kinds: &["function_definition"],
+    function_name_field: "name",
+
+    // Python has no anonymous function syntax with a separate node kind.
+    // (Lambdas are `lambda` nodes but have no name; skip for now.)
+    anon_function_kinds: &[],
+    anon_parent_kinds: &[],
+    anon_parent_name_field: "name",
+
+    call_kind: "call",
+    call_function_field: "function",
+    // obj.method() → attribute node; the method name is in the `attribute` field.
+    method_receiver_kind: "attribute",
+    method_name_field: "attribute",
+
+    path_call_kind: None,
+    path_name_field: None,
+
+    // if / elif / else
+    // tree-sitter-python: if_statement has `condition` and `consequence` fields;
+    // elif_clause and else_clause are sibling child nodes, not named fields.
+    if_kind: Some("if_statement"),
+    if_condition_field: Some("condition"),
+    if_then_field: Some("consequence"),
+    if_else_field: None, // no alternative field; use child-node-based handling below
+    elif_clause_kind: Some("elif_clause"),
+    elif_condition_field: Some("condition"),
+    elif_body_field: Some("consequence"),
+    else_clause_kind: Some("else_clause"),
+    else_body_field: Some("body"),
+
+    // for x in ...: / while ...:
+    for_kinds: &["for_statement"],
+    while_kinds: &["while_statement"],
+    loop_body_field: Some("body"),
+    while_condition_field: Some("condition"),
+
+    // Python 3.10+ match_statement is structurally different from Rust match;
+    // not yet supported — treated as a generic node (children walked normally).
+    match_kind: None,
+    match_value_field: None,
+    match_body_field: None,
+    match_arm_kind: None,
+    match_pattern_kind: None,
+
+    builtins: &builtins::PYTHON_BUILTINS,
+
+    // `# @flow` above a def bypasses the builtins filter for that name.
+    comment_kind: Some("comment"),
+};
 
 pub struct PythonParser {
     language: Language,
-    query: Query,
 }
 
 impl PythonParser {
     pub fn new() -> Self {
-        let language: Language = tree_sitter_python::LANGUAGE.into();
-        let query = Query::new(&language, PYTHON_QUERY).expect("Python query must be valid");
-        Self { language, query }
-    }
-
-    fn get_text(node: Node, source: &str) -> String {
-        let start = node.start_byte();
-        let end = node.end_byte();
-        source.get(start..end).unwrap_or("").trim().to_string()
+        Self { language: tree_sitter_python::LANGUAGE.into() }
     }
 }
 
@@ -54,57 +87,7 @@ impl LanguageParser for PythonParser {
         if tree.root_node().has_error() {
             return CallGraph::new();
         }
-
-        let mut graph = CallGraph::new();
-        let root = tree.root_node();
-
-        let mut functions: Vec<(usize, usize, String)> = Vec::new();
-        let mut calls: Vec<(usize, usize, String)> = Vec::new();
-
-        let name_idx = self.query.capture_index_for_name("fn_name").unwrap_or(0);
-        let call_name_idx = self.query.capture_index_for_name("call_name").unwrap_or(1);
-
-        let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(&self.query, root, code.as_bytes());
-
-        while let Some(qm) = matches.next() {
-            for cap in qm.captures {
-                let node = cap.node;
-                let text = Self::get_text(node, code);
-                if text.is_empty() {
-                    continue;
-                }
-                if cap.index == name_idx {
-                    let (start, end) = node
-                        .parent()
-                        .map(|p: Node| (p.start_byte(), p.end_byte()))
-                        .unwrap_or((node.start_byte(), node.end_byte()));
-                    functions.push((start, end, text));
-                } else if cap.index == call_name_idx {
-                    if !builtins::PYTHON_BUILTINS.contains(text.as_str()) {
-                        calls.push((node.start_byte(), node.end_byte(), text));
-                    }
-                }
-            }
-        }
-
-        functions.sort_by_key(|(s, _, _)| *s);
-
-        for (call_start, call_end, callee) in calls {
-            if let Some((_fs, _fe, caller)) = functions
-                .iter()
-                .rev()
-                .find(|(fs, fe, _)| *fs <= call_start && *fe >= call_end)
-            {
-                graph.entry(caller.clone()).or_default().push(callee);
-            }
-        }
-
-        for (_, _, name) in &functions {
-            graph.entry(name.clone()).or_default();
-        }
-
-        graph
+        walk_tree(&PYTHON_CONFIG, tree.root_node(), code)
     }
 }
 
@@ -114,35 +97,58 @@ mod tests {
 
     #[test]
     fn parse_empty_returns_empty() {
-        let p = PythonParser::new();
-        assert!(p.parse("").is_empty());
+        assert!(PythonParser::new().parse("").is_empty());
     }
 
     #[test]
     fn parse_single_function_no_calls() {
-        let p = PythonParser::new();
-        let code = r#"
-def foo():
-    pass
-"#;
-        let g = p.parse(code);
+        let g = PythonParser::new().parse("def foo():\n    pass\n");
         assert!(g.contains_key("foo"));
-        assert!(g.get("foo").unwrap().is_empty());
+        assert!(g["foo"].is_empty());
     }
 
     #[test]
     fn parse_function_calling_another() {
-        let p = PythonParser::new();
+        let code = "def bar():\n    pass\n\ndef foo():\n    bar()\n";
+        let g = PythonParser::new().parse(code);
+        assert!(g.contains_key("foo"));
+        assert!(g.contains_key("bar"));
+        assert_eq!(g["foo"].len(), 1);
+        assert_eq!(g["foo"][0].target, "bar");
+    }
+
+    #[test]
+    fn parse_if_branch_creates_decision_node() {
         let code = r#"
+def foo(x):
+    if x > 0:
+        bar()
+    else:
+        baz()
+
 def bar():
     pass
 
-def foo():
-    bar()
+def baz():
+    pass
 "#;
-        let g = p.parse(code);
-        assert!(g.contains_key("foo"));
-        assert!(g.contains_key("bar"));
-        assert_eq!(g.get("foo").unwrap(), &vec!["bar".to_string()]);
+        let g = PythonParser::new().parse(code);
+        let foo_edges = &g["foo"];
+        assert!(foo_edges.iter().any(|e| e.target.starts_with("_decision_")));
+        let dec_id = foo_edges.iter().find(|e| e.target.starts_with("_decision_")).unwrap().target.clone();
+        let dec_edges = &g[&dec_id];
+        assert!(dec_edges.iter().any(|e| e.target == "bar" && e.label.as_deref() == Some("True")));
+        assert!(dec_edges.iter().any(|e| e.target == "baz" && e.label.as_deref() == Some("False")));
+    }
+
+    #[test]
+    fn parse_for_loop_creates_decision_node() {
+        let code = "def foo():\n    for i in range(10):\n        bar()\n\ndef bar():\n    pass\n";
+        let g = PythonParser::new().parse(code);
+        let foo_edges = &g["foo"];
+        assert!(foo_edges.iter().any(|e| e.target.starts_with("_decision_")));
+        let dec_id = foo_edges.iter().find(|e| e.target.starts_with("_decision_")).unwrap().target.clone();
+        let dec_edges = &g[&dec_id];
+        assert!(dec_edges.iter().any(|e| e.target == "bar" && e.label.as_deref() == Some("Loop")));
     }
 }

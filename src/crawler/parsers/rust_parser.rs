@@ -1,43 +1,66 @@
-//! RustParser — tree-sitter + Query for function_item and call_expression.
+//! RustParser — tree-sitter recursive walk via GenericWalker.
 
-use tree_sitter::{Language, Node, Parser, Query, QueryCursor};
-use tree_sitter::StreamingIterator;
+use tree_sitter::{Language, Parser};
 
 use super::super::{CallGraph, LanguageParser};
 use super::builtins;
+use super::walker::{walk_tree, WalkerConfig};
 
-/// S-expression query: (1) function definitions, (2) direct calls, (3) method calls.
-/// Calls are associated with the function definition they reside within (containment).
-const RUST_QUERY: &str = r#"
-(function_item
-  name: (identifier) @fn_name)
-(call_expression
-  function: (identifier) @call_name)
-(call_expression
-  function: (field_expression
-    field: (field_identifier) @call_name))
-"#;
+const RUST_CONFIG: WalkerConfig = WalkerConfig {
+    // fn foo() / pub fn foo() / async fn foo()
+    function_kinds: &["function_item"],
+    function_name_field: "name",
+
+    // Closures: skipped for now (no stable name from parent without type info).
+    anon_function_kinds: &[],
+    anon_parent_kinds: &[],
+    anon_parent_name_field: "name",
+
+    call_kind: "call_expression",
+    call_function_field: "function",
+    // self.foo() / items.bar() → field_expression; method name in `field`.
+    method_receiver_kind: "field_expression",
+    method_name_field: "field",
+    // Struct::new() / Module::helper() → scoped_identifier; name in `name`.
+    path_call_kind: Some("scoped_identifier"),
+    path_name_field: Some("name"),
+
+    if_kind: Some("if_expression"),
+    if_condition_field: Some("condition"),
+    if_then_field: Some("consequence"),
+    if_else_field: Some("alternative"),
+    elif_clause_kind: None,
+    elif_condition_field: None,
+    elif_body_field: None,
+    else_clause_kind: None,
+    else_body_field: None,
+
+    for_kinds: &["for_expression"],
+    while_kinds: &["while_expression"],
+    loop_body_field: Some("body"),
+    while_condition_field: Some("condition"),
+
+    match_kind: Some("match_expression"),
+    match_value_field: Some("value"),
+    // match_arm nodes live inside match_block (the `body` field), not as
+    // direct children of match_expression.
+    match_body_field: Some("body"),
+    match_arm_kind: Some("match_arm"),
+    match_pattern_kind: Some("match_pattern"),
+
+    builtins: &builtins::RUST_BUILTINS,
+
+    // `// @flow` above a fn bypasses the builtins filter for that name.
+    comment_kind: Some("line_comment"),
+};
 
 pub struct RustParser {
     language: Language,
-    query: Query,
 }
 
 impl RustParser {
     pub fn new() -> Self {
-        let language: Language = tree_sitter_rust::LANGUAGE.into();
-        let query = Query::new(&language, RUST_QUERY).expect("Rust query must be valid");
-        Self { language, query }
-    }
-
-    fn get_text(node: Node, source: &str) -> String {
-        let start = node.start_byte();
-        let end = node.end_byte();
-        source.get(start..end).unwrap_or("").trim().to_string()
-    }
-
-    fn callee_text(node: Node, source: &str) -> String {
-        Self::get_text(node, source)
+        Self { language: tree_sitter_rust::LANGUAGE.into() }
     }
 }
 
@@ -59,63 +82,7 @@ impl LanguageParser for RustParser {
         if tree.root_node().has_error() {
             return CallGraph::new();
         }
-
-        let mut graph = CallGraph::new();
-        let root = tree.root_node();
-
-        // Collect function ranges (start_byte, end_byte) and names.
-        let mut functions: Vec<(usize, usize, String)> = Vec::new();
-        let mut calls: Vec<(usize, usize, String)> = Vec::new();
-
-        let name_idx = self.query.capture_index_for_name("fn_name").unwrap_or(0);
-        let call_name_idx = self.query.capture_index_for_name("call_name").unwrap_or(1);
-
-        let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(&self.query, root, code.as_bytes());
-
-        while let Some(qm) = matches.next() {
-            for cap in qm.captures {
-                let node = cap.node;
-                let text = Self::get_text(node, code);
-                if text.is_empty() {
-                    continue;
-                }
-                if cap.index == name_idx {
-                    // Use parent function_item range for containment
-                    let (start, end) = node
-                        .parent()
-                        .map(|p: Node| (p.start_byte(), p.end_byte()))
-                        .unwrap_or((node.start_byte(), node.end_byte()));
-                    functions.push((start, end, text));
-                } else if cap.index == call_name_idx {
-                    let callee = Self::callee_text(node, code);
-                    if !callee.is_empty() && !builtins::RUST_BUILTINS.contains(callee.as_str()) {
-                        calls.push((node.start_byte(), node.end_byte(), callee));
-                    }
-                }
-            }
-        }
-
-        // Sort functions by start_byte for containment lookup.
-        functions.sort_by_key(|(s, _, _)| *s);
-
-        for (call_start, call_end, callee) in calls {
-            // Find the innermost function that contains this call.
-            if let Some((_fs, _fe, caller)) = functions
-                .iter()
-                .rev()
-                .find(|(fs, fe, _)| *fs <= call_start && *fe >= call_end)
-            {
-                graph.entry(caller.clone()).or_default().push(callee);
-            }
-        }
-
-        // Ensure all functions appear as nodes (even if they don't call anything).
-        for (_, _, name) in &functions {
-            graph.entry(name.clone()).or_default();
-        }
-
-        graph
+        walk_tree(&RUST_CONFIG, tree.root_node(), code)
     }
 }
 
@@ -125,89 +92,13 @@ mod tests {
 
     #[test]
     fn parse_empty_returns_empty() {
-        let p = RustParser::new();
-        let g = p.parse("");
-        assert!(g.is_empty());
+        assert!(RustParser::new().parse("").is_empty());
     }
 
     #[test]
     fn parse_invalid_syntax_returns_empty() {
-        let p = RustParser::new();
-        let g = p.parse("fn broken {");
-        assert!(g.is_empty());
+        assert!(RustParser::new().parse("fn broken {").is_empty());
     }
 
-    #[test]
-    fn parse_single_function_no_calls() {
-        let p = RustParser::new();
-        let code = r#"
-fn foo() {
-    let x = 1;
-}
-"#;
-        let g = p.parse(code);
-        assert!(g.contains_key("foo"));
-        assert!(g.get("foo").unwrap().is_empty());
-    }
-
-    #[test]
-    fn parse_function_calling_another() {
-        let p = RustParser::new();
-        let code = r#"
-fn bar() -> i32 { 42 }
-
-fn foo() {
-    bar();
-}
-"#;
-        let g = p.parse(code);
-        assert!(g.contains_key("foo"));
-        assert!(g.contains_key("bar"));
-        assert_eq!(g.get("foo").unwrap(), &vec!["bar".to_string()]);
-    }
-
-    #[test]
-    fn parse_nested_calls() {
-        let p = RustParser::new();
-        let code = r#"
-fn baz() {}
-fn bar() { baz(); }
-fn foo() { bar(); }
-"#;
-        let g = p.parse(code);
-        assert_eq!(g.get("foo").unwrap(), &vec!["bar".to_string()]);
-        assert_eq!(g.get("bar").unwrap(), &vec!["baz".to_string()]);
-        assert!(g.get("baz").unwrap().is_empty());
-    }
-
-    #[test]
-    fn parse_method_call_filtered() {
-        let p = RustParser::new();
-        let code = r#"
-fn foo() {
-    let v = vec![1];
-    v.len();
-}
-"#;
-        let g = p.parse(code);
-        assert!(g.contains_key("foo"));
-        let callees = g.get("foo").unwrap();
-        assert!(callees.is_empty(), "len (std method) should be filtered out");
-    }
-
-    #[test]
-    fn parse_multiple_calls_same_callee() {
-        let p = RustParser::new();
-        let code = r#"
-fn bar() {}
-fn foo() {
-    bar();
-    bar();
-}
-"#;
-        let g = p.parse(code);
-        let callees = g.get("foo").unwrap();
-        assert!(callees.len() >= 1);
-        assert!(callees.contains(&"bar".to_string()));
-    }
+    // Logic flow map integration tests: see tests/logic_flow_map.rs
 }

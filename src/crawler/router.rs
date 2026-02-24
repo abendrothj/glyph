@@ -1,16 +1,12 @@
 //! CrawlerRouter — walkdir-based directory crawler with extension dispatch.
 
-use std::collections::HashMap;
 use std::path::Path;
 use walkdir::WalkDir;
 
 use super::parsers::python_parser::PythonParser;
 use super::parsers::rust_parser::RustParser;
 use super::parsers::typescript_parser::TypeScriptParser;
-use super::LanguageParser;
-
-/// Call graph: caller -> list of callees.
-pub type CallGraph = HashMap<String, Vec<String>>;
+use super::{CallGraph, LanguageParser};
 
 /// Routes files by extension to the appropriate LanguageParser.
 /// Uses walkdir to iterate; parse failures are logged and skipped (no panic).
@@ -30,7 +26,7 @@ impl CrawlerRouter {
         let typescript_parser = TypeScriptParser::new();
 
         for entry in WalkDir::new(root_path)
-            .follow_links(true)
+            .follow_links(false)
             .into_iter()
             .filter_map(|e| e.ok())
         {
@@ -51,12 +47,50 @@ impl CrawlerRouter {
             if let Some(p) = parser {
                 if let Ok(content) = std::fs::read_to_string(path) {
                     let file_graph = p.parse(&content);
-                    for (caller, callees) in file_graph {
-                        graph.entry(caller).or_default().extend(callees);
+                    for (caller, edges) in file_graph {
+                        graph.entry(caller).or_default().extend(edges);
                     }
                 }
             }
         }
+
+        // ── Two-pass post-processing ─────────────────────────────────────────
+        // Pass 1: collect user-defined function names (non-synthetic keys).
+        let defined: std::collections::HashSet<String> = graph
+            .keys()
+            .filter(|k| !k.starts_with("_decision_"))
+            .cloned()
+            .collect();
+
+        // Pass 2: filter all edge lists — keep only edges to defined functions
+        // or to other decision nodes.  Drops library/external calls that were
+        // never parsed (std, third-party crates, etc.).
+        for edges in graph.values_mut() {
+            edges.retain(|e| {
+                e.target.starts_with("_decision_") || defined.contains(&e.target)
+            });
+        }
+
+        // Pass 3: fixpoint-prune decision nodes that have no remaining outgoing
+        // edges.  After removing one empty decision node, its parent may also
+        // become empty, so we repeat until stable.
+        loop {
+            let empty: std::collections::HashSet<String> = graph
+                .iter()
+                .filter(|(k, v)| k.starts_with("_decision_") && v.is_empty())
+                .map(|(k, _)| k.clone())
+                .collect();
+            if empty.is_empty() {
+                break;
+            }
+            for id in &empty {
+                graph.remove(id);
+            }
+            for edges in graph.values_mut() {
+                edges.retain(|e| !empty.contains(&e.target));
+            }
+        }
+
         graph
     }
 }
@@ -96,7 +130,9 @@ pub fn public_api() { helper(); }
         let g = CrawlerRouter::crawl(dir_path.to_str().unwrap());
         assert!(g.contains_key("public_api"));
         assert!(g.contains_key("helper"));
-        assert_eq!(g.get("public_api").unwrap(), &vec!["helper".to_string()]);
+        let public_api_edges = g.get("public_api").unwrap();
+        assert_eq!(public_api_edges.len(), 1);
+        assert_eq!(public_api_edges[0].target, "helper");
     }
 
     #[test]
@@ -119,6 +155,8 @@ def foo():
         let g = CrawlerRouter::crawl(dir_path.to_str().unwrap());
         assert!(g.contains_key("foo"));
         assert!(g.contains_key("bar"));
-        assert_eq!(g.get("foo").unwrap(), &vec!["bar".to_string()]);
+        let foo_edges = g.get("foo").unwrap();
+        assert_eq!(foo_edges.len(), 1);
+        assert_eq!(foo_edges[0].target, "bar");
     }
 }

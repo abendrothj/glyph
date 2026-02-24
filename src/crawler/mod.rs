@@ -2,10 +2,11 @@
 //!
 //! LanguageParser trait + CrawlerRouter for extension-based dispatch. Tree-sitter Query for Rust MVP.
 
-mod parsers;
+pub mod parsers;
 mod router;
 
 use bevy::prelude::*;
+use parsers::walker::DECISION_SEP;
 use std::collections::HashMap;
 use crate::components::{CanvasNode, Edge};
 use crate::helpers::spawn_node_with_color;
@@ -20,8 +21,19 @@ pub struct CrawlRequest {
     pub path: String,
 }
 
-/// Call graph: caller -> list of callees.
-pub type CallGraph = HashMap<String, Vec<String>>;
+
+/// FlowEdge: labeled edge in the flow map.
+#[derive(Clone, Debug)]
+pub struct FlowEdge {
+    pub target: String,
+    pub label: Option<String>,
+}
+
+/// Flow map: node_id -> list of outgoing edges (with labels for branches).
+pub type FlowMap = HashMap<String, Vec<FlowEdge>>;
+
+/// CallGraph is now an alias for FlowMap for compatibility.
+pub type CallGraph = FlowMap;
 
 /// Trait for language-specific AST parsing. Returns caller -> callees map.
 pub trait LanguageParser: Send + Sync {
@@ -33,18 +45,25 @@ pub trait LanguageParser: Send + Sync {
 const FLOW_ROW_HEIGHT: f32 = 380.0;
 const FLOW_NODE_SPACING: f32 = 320.0;
 
+
 /// Color for crawled function nodes.
 const CRAWL_NODE_COLOR: Color = Color::srgb(0.35, 0.55, 0.45);
+/// Color for decision (branch) nodes.
+const DECISION_NODE_COLOR: Color = Color::srgb(0.85, 0.65, 0.15); // gold/amber
 
 /// Compute hierarchy levels: roots (never callees) = 0, callees = 1 + max(caller level).
 fn hierarchy_levels(graph: &CallGraph, all_fns: &[String]) -> HashMap<String, usize> {
     let mut callee_to_callers: HashMap<String, Vec<String>> = HashMap::new();
-    for (caller, callees) in graph {
-        for callee in callees {
-            callee_to_callers
-                .entry(callee.clone())
-                .or_default()
-                .push(caller.clone());
+    for (caller, edges) in graph {
+        for edge in edges {
+            // Exclude self-calls: a self-recursive function with no external callers
+            // should still be treated as a root (level 0), not sink to the bottom.
+            if edge.target != *caller {
+                callee_to_callers
+                    .entry(edge.target.clone())
+                    .or_default()
+                    .push(caller.clone());
+            }
         }
     }
 
@@ -140,25 +159,32 @@ pub fn handle_crawl_requests(
             let y = -(lvl as f32) * FLOW_ROW_HEIGHT;
             for (i, name) in names.iter().enumerate() {
                 let x = (i as f32 - row_len as f32 * 0.5) * FLOW_NODE_SPACING;
-                let entity = spawn_node_with_color(&mut commands, x, y, name, CRAWL_NODE_COLOR);
+                // Decision nodes have special prefix
+                let is_decision = name.starts_with("_decision_");
+                let color = if is_decision { DECISION_NODE_COLOR } else { CRAWL_NODE_COLOR };
+                // Decision node keys encode the display label after DECISION_SEP.
+                // e.g. `_decision_1\x1Fif x > 0` → display `if x > 0`.
+                let display_name =
+                    name.splitn(2, DECISION_SEP).nth(1).unwrap_or(name.as_str());
+                let entity = spawn_node_with_color(&mut commands, x, y, display_name, color);
                 name_to_entity.insert(name.clone(), entity);
             }
         }
 
-        // Spawn edges (dedupe callees per caller). Only link to defined functions.
+        // Spawn edges with labels (for flow map). Only link to defined or decision nodes.
         let mut edge_count = 0;
-        for (caller, callees) in &graph {
+        for (caller, edges) in &graph {
             let Some(&source) = name_to_entity.get(caller) else {
                 continue;
             };
-            let seen: std::collections::HashSet<_> = callees.iter().filter(|c| defined.contains(*c)).collect();
-            for callee in seen {
-                if let Some(&target) = name_to_entity.get(callee) {
+            for edge in edges {
+                let target_name = &edge.target;
+                if let Some(&target) = name_to_entity.get(target_name) {
                     if source != target {
                         commands.spawn(Edge {
                             source,
                             target,
-                            label: None,
+                            label: edge.label.clone(),
                         });
                         edge_count += 1;
                     }

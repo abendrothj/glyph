@@ -1,40 +1,78 @@
-//! TypeScriptParser — tree-sitter for function declarations and call expressions.
+//! TypeScriptParser — tree-sitter recursive walk via GenericWalker.
+//!
+//! Handles function declarations, method definitions, and arrow functions /
+//! function expressions (name resolved from the variable declarator parent).
 
-use tree_sitter::{Language, Node, Parser, Query, QueryCursor};
-use tree_sitter::StreamingIterator;
+use tree_sitter::{Language, Parser};
 
 use super::super::{CallGraph, LanguageParser};
 use super::builtins;
+use super::walker::{walk_tree, WalkerConfig};
 
-/// TypeScript: function_declaration, method_definition; call_expression.
-const TYPESCRIPT_QUERY: &str = r#"
-(function_declaration
-  name: (identifier) @fn_name)
-(method_definition
-  name: (property_identifier) @fn_name)
-(call_expression
-  function: (identifier) @call_name)
-(call_expression
-  function: (member_expression
-    property: (property_identifier) @call_name))
-"#;
+const TYPESCRIPT_CONFIG: WalkerConfig = WalkerConfig {
+    // Named function nodes whose name is an inline field.
+    // `function_declaration`  → function foo() {}
+    // `method_definition`     → class methods
+    // `generator_function_declaration` → function* foo() {}
+    function_kinds: &["function_declaration", "method_definition", "generator_function_declaration"],
+    function_name_field: "name",
+
+    // Anonymous functions whose name comes from the parent variable declarator.
+    // `arrow_function`     → const foo = () => {}
+    // `function_expression`→ const foo = function() {}
+    anon_function_kinds: &["arrow_function", "function_expression"],
+    // Name is on the parent `variable_declarator` (top-level / local const/let/var)
+    // or `public_field_definition` (class property arrow functions).
+    anon_parent_kinds: &["variable_declarator", "public_field_definition"],
+    anon_parent_name_field: "name",
+
+    call_kind: "call_expression",
+    call_function_field: "function",
+    // obj.method() → member_expression; the method name is in the `property` field.
+    method_receiver_kind: "member_expression",
+    method_name_field: "property",
+
+    path_call_kind: None,
+    path_name_field: None,
+
+    // if / else  — tree-sitter-typescript uses field-based alternative (same as Rust)
+    // condition is a `parenthesized_expression`; walking it reaches the inner expression.
+    if_kind: Some("if_statement"),
+    if_condition_field: Some("condition"),
+    if_then_field: Some("consequence"),
+    if_else_field: Some("alternative"),
+    elif_clause_kind: None, // TypeScript uses nested if_statement inside alternative
+    elif_condition_field: None,
+    elif_body_field: None,
+    else_clause_kind: None,
+    else_body_field: None,
+
+    // for / while loops (includes for...of and for...in variants)
+    for_kinds: &["for_statement", "for_in_statement", "for_of_statement"],
+    while_kinds: &["while_statement", "do_statement"],
+    loop_body_field: Some("body"),
+    while_condition_field: Some("condition"),
+
+    // No match expression in TypeScript (switch is a separate construct; not yet supported).
+    match_kind: None,
+    match_value_field: None,
+    match_body_field: None,
+    match_arm_kind: None,
+    match_pattern_kind: None,
+
+    builtins: &builtins::TYPESCRIPT_BUILTINS,
+
+    // `// @flow` above a function bypasses the builtins filter for that name.
+    comment_kind: Some("comment"),
+};
 
 pub struct TypeScriptParser {
     language: Language,
-    query: Query,
 }
 
 impl TypeScriptParser {
     pub fn new() -> Self {
-        let language: Language = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
-        let query = Query::new(&language, TYPESCRIPT_QUERY).expect("TypeScript query must be valid");
-        Self { language, query }
-    }
-
-    fn get_text(node: Node, source: &str) -> String {
-        let start = node.start_byte();
-        let end = node.end_byte();
-        source.get(start..end).unwrap_or("").trim().to_string()
+        Self { language: tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into() }
     }
 }
 
@@ -56,57 +94,7 @@ impl LanguageParser for TypeScriptParser {
         if tree.root_node().has_error() {
             return CallGraph::new();
         }
-
-        let mut graph = CallGraph::new();
-        let root = tree.root_node();
-
-        let mut functions: Vec<(usize, usize, String)> = Vec::new();
-        let mut calls: Vec<(usize, usize, String)> = Vec::new();
-
-        let name_idx = self.query.capture_index_for_name("fn_name").unwrap_or(0);
-        let call_name_idx = self.query.capture_index_for_name("call_name").unwrap_or(1);
-
-        let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(&self.query, root, code.as_bytes());
-
-        while let Some(qm) = matches.next() {
-            for cap in qm.captures {
-                let node = cap.node;
-                let text = Self::get_text(node, code);
-                if text.is_empty() {
-                    continue;
-                }
-                if cap.index == name_idx {
-                    let (start, end) = node
-                        .parent()
-                        .map(|p: Node| (p.start_byte(), p.end_byte()))
-                        .unwrap_or((node.start_byte(), node.end_byte()));
-                    functions.push((start, end, text));
-                } else if cap.index == call_name_idx {
-                    if !builtins::TYPESCRIPT_BUILTINS.contains(text.as_str()) {
-                        calls.push((node.start_byte(), node.end_byte(), text));
-                    }
-                }
-            }
-        }
-
-        functions.sort_by_key(|(s, _, _)| *s);
-
-        for (call_start, call_end, callee) in calls {
-            if let Some((_fs, _fe, caller)) = functions
-                .iter()
-                .rev()
-                .find(|(fs, fe, _)| *fs <= call_start && *fe >= call_end)
-            {
-                graph.entry(caller.clone()).or_default().push(callee);
-            }
-        }
-
-        for (_, _, name) in &functions {
-            graph.entry(name.clone()).or_default();
-        }
-
-        graph
+        walk_tree(&TYPESCRIPT_CONFIG, tree.root_node(), code)
     }
 }
 
@@ -116,29 +104,75 @@ mod tests {
 
     #[test]
     fn parse_empty_returns_empty() {
-        let p = TypeScriptParser::new();
-        assert!(p.parse("").is_empty());
+        assert!(TypeScriptParser::new().parse("").is_empty());
     }
 
     #[test]
     fn parse_single_function_no_calls() {
-        let p = TypeScriptParser::new();
-        let code = "function foo() {}";
-        let g = p.parse(code);
+        let g = TypeScriptParser::new().parse("function foo() {}");
         assert!(g.contains_key("foo"));
-        assert!(g.get("foo").unwrap().is_empty());
+        assert!(g["foo"].is_empty());
     }
 
     #[test]
     fn parse_function_calling_another() {
-        let p = TypeScriptParser::new();
-        let code = r#"
-function bar() {}
-function foo() { bar(); }
-"#;
-        let g = p.parse(code);
+        let code = "function bar() {}\nfunction foo() { bar(); }\n";
+        let g = TypeScriptParser::new().parse(code);
         assert!(g.contains_key("foo"));
         assert!(g.contains_key("bar"));
-        assert_eq!(g.get("foo").unwrap(), &vec!["bar".to_string()]);
+        assert_eq!(g["foo"].len(), 1);
+        assert_eq!(g["foo"][0].target, "bar");
+    }
+
+    #[test]
+    fn parse_arrow_function_calling_another() {
+        let code = "const bar = () => {};\nconst foo = () => { bar(); };\n";
+        let g = TypeScriptParser::new().parse(code);
+        assert!(g.contains_key("foo"), "arrow function 'foo' not found; keys: {:?}", g.keys().collect::<Vec<_>>());
+        assert!(g.contains_key("bar"));
+        assert!(g["foo"].iter().any(|e| e.target == "bar"));
+    }
+
+    #[test]
+    fn parse_if_branch_creates_decision_node() {
+        let code = r#"
+function foo(x: number) {
+    if (x > 0) {
+        bar();
+    } else {
+        baz();
+    }
+}
+function bar() {}
+function baz() {}
+"#;
+        let g = TypeScriptParser::new().parse(code);
+        let foo_edges = &g["foo"];
+        assert!(foo_edges.iter().any(|e| e.target.starts_with("_decision_")));
+        let dec_id = foo_edges
+            .iter()
+            .find(|e| e.target.starts_with("_decision_"))
+            .unwrap()
+            .target
+            .clone();
+        let dec_edges = &g[&dec_id];
+        assert!(dec_edges.iter().any(|e| e.target == "bar" && e.label.as_deref() == Some("True")));
+        assert!(dec_edges.iter().any(|e| e.target == "baz" && e.label.as_deref() == Some("False")));
+    }
+
+    #[test]
+    fn parse_for_loop_creates_decision_node() {
+        let code = "function foo() {\n    for (const x of items) {\n        bar();\n    }\n}\nfunction bar() {}\n";
+        let g = TypeScriptParser::new().parse(code);
+        let foo_edges = &g["foo"];
+        assert!(foo_edges.iter().any(|e| e.target.starts_with("_decision_")));
+        let dec_id = foo_edges
+            .iter()
+            .find(|e| e.target.starts_with("_decision_"))
+            .unwrap()
+            .target
+            .clone();
+        let dec_edges = &g[&dec_id];
+        assert!(dec_edges.iter().any(|e| e.target == "bar" && e.label.as_deref() == Some("Loop")));
     }
 }
