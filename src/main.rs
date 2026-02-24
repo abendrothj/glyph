@@ -1,6 +1,10 @@
 use bevy::{
-    input::keyboard::Key,
+    input::{
+        keyboard::Key,
+        mouse::{MouseMotion, MouseScrollUnit, MouseWheel},
+    },
     prelude::*,
+    window::PrimaryWindow,
 };
 use std::collections::HashMap;
 
@@ -48,6 +52,18 @@ struct Edge {
     target: Entity,
 }
 
+/// Marker for the primary 2D camera.
+#[derive(Component)]
+struct MainCamera;
+
+/// Attached to a CanvasNode while it is being mouse-dragged.
+/// `offset` is (cursor_world – node_center) at the moment the drag began,
+/// so the node does not "snap" to the cursor centre.
+#[derive(Component)]
+struct Dragging {
+    offset: Vec2,
+}
+
 // ---------------------------------------------------------------------------
 // Resources
 // ---------------------------------------------------------------------------
@@ -74,7 +90,15 @@ fn main() {
         .add_systems(
             Update,
             (
-                // Input
+                // Camera controls — active in every mode
+                camera_zoom_system,
+                camera_pan_system,
+                // Mouse selection — active when not typing (checks internally)
+                mouse_selection_system,
+                // Drag / drop — Standard mode only
+                node_drag_system.run_if(in_state(InputMode::Standard)),
+                node_drop_system.run_if(in_state(InputMode::Standard)),
+                // Vim input systems
                 vim_normal_system.run_if(in_state(InputMode::VimNormal)),
                 vim_insert_system.run_if(in_state(InputMode::VimInsert)),
                 standard_mode_system.run_if(in_state(InputMode::Standard)),
@@ -93,7 +117,8 @@ fn main() {
 // ---------------------------------------------------------------------------
 
 fn setup_canvas(mut commands: Commands) {
-    commands.spawn(Camera2d);
+    // Camera gets the MainCamera marker so we can query it explicitly.
+    commands.spawn((Camera2d, MainCamera));
 
     // Node A — initially selected
     commands
@@ -109,7 +134,7 @@ fn setup_canvas(mut commands: Commands) {
                 Text2d::new("Node A"),
                 TextFont { font_size: 14.0, ..default() },
                 TextColor(Color::srgb(0.1, 0.1, 0.1)),
-                // Relative to parent: centered, one layer in front of the sprite.
+                // Relative to parent: centred, one layer in front of the sprite.
                 Transform::from_xyz(0.0, 0.0, 1.0),
                 TextLabel,
             ));
@@ -150,6 +175,187 @@ fn setup_canvas(mut commands: Commands) {
                 TextLabel,
             ));
         });
+}
+
+// ---------------------------------------------------------------------------
+// Camera systems
+// ---------------------------------------------------------------------------
+
+/// Scroll-wheel zoom: adjusts the orthographic scale of the main camera.
+/// Pinch/scroll in  → scale decreases (zoom in, things appear larger).
+/// Pinch/scroll out → scale increases (zoom out, things appear smaller).
+fn camera_zoom_system(
+    mut mouse_wheel: MessageReader<MouseWheel>,
+    mut proj_q: Query<&mut Projection, With<MainCamera>>,
+) {
+    let Ok(mut proj) = proj_q.single_mut() else {
+        return;
+    };
+    for event in mouse_wheel.read() {
+        let Projection::Orthographic(ortho) = proj.as_mut() else {
+            continue;
+        };
+        let delta = match event.unit {
+            MouseScrollUnit::Line => event.y * 0.10,
+            MouseScrollUnit::Pixel => event.y * 0.001,
+        };
+        ortho.scale = (ortho.scale * (1.0 - delta)).clamp(0.1, 10.0);
+    }
+}
+
+/// Middle-click pan: translate the camera in the opposite direction of mouse movement.
+/// Pan speed is proportional to the current zoom scale so that a pixel of mouse movement
+/// always corresponds to one pixel of viewport displacement.
+fn camera_pan_system(
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    mut mouse_motion: MessageReader<MouseMotion>,
+    mut camera_q: Query<(&mut Transform, &Projection), With<MainCamera>>,
+) {
+    if !mouse_buttons.pressed(MouseButton::Middle) {
+        // Drain events so they don't accumulate while not panning.
+        for _ in mouse_motion.read() {}
+        return;
+    }
+
+    let Ok((mut cam_transform, projection)) = camera_q.single_mut() else {
+        return;
+    };
+    let scale = match projection {
+        Projection::Orthographic(ortho) => ortho.scale,
+        _ => 1.0,
+    };
+
+    for motion in mouse_motion.read() {
+        cam_transform.translation.x -= motion.delta.x * scale;
+        cam_transform.translation.y += motion.delta.y * scale;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Mouse selection & drag systems
+// ---------------------------------------------------------------------------
+
+/// Left-click to select a CanvasNode and begin dragging it.
+///
+/// Skipped entirely in VimInsert so that typing is never interrupted by
+/// an accidental click.  In any other mode a click on a node:
+///   1. Clears the previous selection.
+///   2. Inserts `Selected` and `Dragging { offset }` on the clicked entity.
+///   3. Transitions to `Standard` mode.
+/// A click on empty canvas deselects.
+fn mouse_selection_system(
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    window_q: Query<&Window, With<PrimaryWindow>>,
+    camera_q: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    mut commands: Commands,
+    node_query: Query<(Entity, &Transform), With<CanvasNode>>,
+    selected_q: Query<Entity, With<Selected>>,
+    dragging_q: Query<Entity, With<Dragging>>,
+    mut next_state: ResMut<NextState<InputMode>>,
+    current_state: Res<State<InputMode>>,
+) {
+    // Only act on a fresh left-click press.
+    if !mouse_buttons.just_pressed(MouseButton::Left) {
+        return;
+    }
+    // Don't interrupt insert-mode typing.
+    if *current_state.get() == InputMode::VimInsert {
+        return;
+    }
+
+    let Ok(window) = window_q.single() else {
+        return;
+    };
+    let Some(cursor_pos) = window.cursor_position() else {
+        return;
+    };
+    let Ok((camera, cam_transform)) = camera_q.single() else {
+        return;
+    };
+    let Ok(world_pos) = camera.viewport_to_world_2d(cam_transform, cursor_pos) else {
+        return;
+    };
+
+    // AABB hit-test: nodes are 160 × 80 world units.
+    const HALF: Vec2 = Vec2::new(80.0, 40.0);
+
+    for (entity, transform) in &node_query {
+        let node_pos = transform.translation.truncate();
+        if world_pos.x >= node_pos.x - HALF.x
+            && world_pos.x <= node_pos.x + HALF.x
+            && world_pos.y >= node_pos.y - HALF.y
+            && world_pos.y <= node_pos.y + HALF.y
+        {
+            // Clear old selection and any stale drag state.
+            for prev in &selected_q {
+                commands.entity(prev).remove::<Selected>();
+            }
+            for prev in &dragging_q {
+                commands.entity(prev).remove::<Dragging>();
+            }
+
+            let offset = world_pos - node_pos;
+            commands
+                .entity(entity)
+                .insert((Selected, Dragging { offset }));
+
+            next_state.set(InputMode::Standard);
+            info!("[SELECT] {:?} @ {:?}", entity, node_pos);
+            return;
+        }
+    }
+
+    // Clicked on empty space — deselect everything.
+    for prev in &selected_q {
+        commands.entity(prev).remove::<Selected>();
+    }
+}
+
+/// While the left mouse button is held, move the dragged node to the cursor.
+/// Runs only in Standard mode.
+fn node_drag_system(
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    window_q: Query<&Window, With<PrimaryWindow>>,
+    camera_q: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    mut dragging_q: Query<(&mut Transform, &Dragging)>,
+) {
+    if !mouse_buttons.pressed(MouseButton::Left) {
+        return;
+    }
+
+    let Ok(window) = window_q.single() else {
+        return;
+    };
+    let Some(cursor_pos) = window.cursor_position() else {
+        return;
+    };
+    let Ok((camera, cam_transform)) = camera_q.single() else {
+        return;
+    };
+    let Ok(world_pos) = camera.viewport_to_world_2d(cam_transform, cursor_pos) else {
+        return;
+    };
+
+    for (mut transform, dragging) in &mut dragging_q {
+        let target = world_pos - dragging.offset;
+        transform.translation.x = target.x;
+        transform.translation.y = target.y;
+    }
+}
+
+/// When the left mouse button is released, remove the Dragging marker.
+/// Runs only in Standard mode.
+fn node_drop_system(
+    mut commands: Commands,
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    dragging_q: Query<Entity, With<Dragging>>,
+) {
+    if mouse_buttons.just_released(MouseButton::Left) {
+        for entity in &dragging_q {
+            commands.entity(entity).remove::<Dragging>();
+            info!("[DROP] {:?}", entity);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -253,7 +459,8 @@ fn draw_edges_system(
 
 /// Draw a mode-coloured rectangle outline around the selected node.
 ///
-/// VimNormal  → blue   VimInsert → green   VimEasymotion → orange
+/// VimNormal → blue   VimInsert → green   VimEasymotion → orange
+/// Standard  → purple
 fn draw_selection_system(
     mut gizmos: Gizmos,
     selected_query: Query<&Transform, With<Selected>>,
@@ -266,7 +473,8 @@ fn draw_selection_system(
     let color = match state.get() {
         InputMode::VimInsert => Color::srgb(0.2, 0.85, 0.4),
         InputMode::VimEasymotion => Color::srgb(1.0, 0.6, 0.1),
-        _ => Color::srgb(0.3, 0.6, 1.0),
+        InputMode::Standard => Color::srgb(0.85, 0.4, 0.9),
+        InputMode::VimNormal => Color::srgb(0.3, 0.6, 1.0),
     };
 
     // Outline sits 5px outside the 160×80 sprite on every side.
@@ -412,6 +620,7 @@ fn vim_insert_system(
     }
 }
 
+/// Standard mode: Escape returns to VimNormal.
 fn standard_mode_system(
     keys: Res<ButtonInput<KeyCode>>,
     mut next_state: ResMut<NextState<InputMode>>,
