@@ -19,8 +19,8 @@ use crate::state::InputMode;
 pub struct CommandPaletteState {
     pub is_open: bool,
     pub search_query: String,
-    /// Path buffer for "Open path" command.
-    pub open_path_buffer: String,
+    /// When true, focus search on next frame; then allow Tab to move to buttons.
+    pub needs_initial_focus: bool,
 }
 
 fn is_super_pressed(keys: &ButtonInput<KeyCode>) -> bool {
@@ -36,7 +36,7 @@ pub fn toggle_command_palette_system(
         palette.is_open = !palette.is_open;
         if palette.is_open {
             palette.search_query.clear();
-            palette.open_path_buffer.clear();
+            palette.needs_initial_focus = true;
         }
     }
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
@@ -168,9 +168,9 @@ pub fn ui_top_bar_system(
                     "Get started: n (new node)  Cmd+K (commands)  crawl ./src (call graph)"
                 } else {
                     match state.get() {
-                        InputMode::Standard => "Esc or Ctrl+[: Vim  Shift+drag: draw edge",
-                        InputMode::VimNormal => "i f ge n a yy ce dd  hjkl",
-                        InputMode::VimInsert => "Esc or Ctrl+[  Ctrl+h: backspace",
+                        InputMode::Standard => "Esc or Ctrl+[: Vim  Space+drag: pan  Shift+drag: draw edge",
+                        InputMode::VimNormal => "i: insert  f: jump  n: new  a: add  yy: dup  ce: connect  dd: del  hjkl: move  Arrows: pan",
+                        InputMode::VimInsert => "Esc or Ctrl+[: normal  Ctrl+h: backspace",
                         InputMode::VimEasymotion => "Type letter to jump  Esc: cancel",
                     }
                 };
@@ -286,8 +286,9 @@ pub fn ui_command_palette_system(
                     .hint_text("Search commands... or type 'crawl ./src' + Enter")
                     .desired_width(f32::INFINITY),
             );
-            if !response.has_focus() {
+            if palette.needs_initial_focus {
                 response.request_focus();
+                palette.needs_initial_focus = false;
             }
             // Intercept Enter: if text starts with "crawl ", send CrawlRequest event.
             if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -331,32 +332,6 @@ pub fn ui_command_palette_system(
                     warn!("[LOAD] {} not found", WORKSPACE_PATH);
                 }
                 palette.is_open = false;
-            } else if show("path") {
-                let mut do_open = false;
-                ui.horizontal(|ui| {
-                    ui.label("Open path:");
-                    let resp = ui.add(
-                        egui::TextEdit::singleline(&mut palette.open_path_buffer)
-                            .hint_text("/path/to/workspace.glyph")
-                            .desired_width(200.0),
-                    );
-                    if ui.button("Open").clicked() {
-                        do_open = true;
-                    }
-                    if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        do_open = true;
-                    }
-                });
-                if do_open {
-                    let path = std::path::Path::new(palette.open_path_buffer.trim());
-                    if !path.as_os_str().is_empty() && path.exists() {
-                        pending_load.0 = Some(path.to_path_buf());
-                        palette.open_path_buffer.clear();
-                        palette.is_open = false;
-                    } else if !path.as_os_str().is_empty() {
-                        warn!("[LOAD] Path not found: {}", path.display());
-                    }
-                }
             } else if show("open") && ui.button("Open file...").clicked() {
                 let (tx, rx) = mpsc::channel();
                 let start_dir = workflows_dir();
@@ -414,7 +389,7 @@ pub fn ui_command_palette_system(
                 ui.separator();
                 ui.add_space(4.0);
                 ui.label(
-                    egui::RichText::new("Crawl: type \"crawl ./src\" (or any path) and press Enter. Uses tree-sitter AST (Rust MVP; py/ts extensible).")
+                    egui::RichText::new("Crawl: type \"crawl ./src\" (or any path) and press Enter.")
                         .color(egui::Color32::GRAY)
                         .small(),
                 );

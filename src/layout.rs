@@ -9,19 +9,19 @@ use crate::components::{CanvasNode, Dragging, Edge};
 pub struct ForceLayoutActive(pub bool);
 
 /// Repulsion strength between nodes.
-const K_REP: f32 = 8000.0;
-/// Attraction strength along edges.
-const K_ATT: f32 = 0.008;
+const K_REP: f32 = 25000.0;
+/// Attraction strength along edges (kept low — dense graphs have many edges, so attraction was overpowering).
+const K_ATT: f32 = 0.001;
 /// Ideal edge length (spring rest length).
-const IDEAL_LEN: f32 = 250.0;
-/// Max distance for repulsion (avoid tiny forces from far nodes).
-const MAX_REP_DIST: f32 = 600.0;
+const IDEAL_LEN: f32 = 400.0;
+/// Max distance for repulsion (nodes beyond this don't repel — was 600, too small for large graphs).
+const MAX_REP_DIST: f32 = 2000.0;
 /// Min distance to avoid division by zero.
 const MIN_DIST: f32 = 1.0;
 /// Damping per frame.
-const DAMPING: f32 = 0.85;
-/// Time step for stability.
-const DT: f32 = 1.0 / 60.0;
+const DAMPING: f32 = 0.9;
+/// Time step for stability (slightly higher for faster convergence).
+const DT: f32 = 1.0 / 50.0;
 
 /// Apply force-directed layout: repulsion between nodes, attraction along edges.
 pub fn force_directed_layout_system(
@@ -51,6 +51,17 @@ pub fn force_directed_layout_system(
         forces.insert(*e, Vec2::ZERO);
     }
 
+    // Degree (edge count per node) — normalize attraction so high-degree nodes don't get over-pulled.
+    let mut degree: std::collections::HashMap<Entity, usize> =
+        std::collections::HashMap::with_capacity(positions.len());
+    for (e, _) in &positions {
+        degree.insert(*e, 0);
+    }
+    for edge in &edge_query {
+        degree.entry(edge.source).and_modify(|c| *c += 1).or_insert(1);
+        degree.entry(edge.target).and_modify(|c| *c += 1).or_insert(1);
+    }
+
     // Repulsion: each pair of nodes
     for (i, (e1, p1)) in positions.iter().enumerate() {
         for (e2, p2) in positions.iter().skip(i + 1) {
@@ -66,7 +77,7 @@ pub fn force_directed_layout_system(
         }
     }
 
-    // Attraction: along edges
+    // Attraction: along edges (normalized by sqrt(degree) so hubs don't collapse)
     for edge in &edge_query {
         let p1 = positions.iter().find(|(e, _)| *e == edge.source).map(|(_, p)| *p);
         let p2 = positions.iter().find(|(e, _)| *e == edge.target).map(|(_, p)| *p);
@@ -77,11 +88,13 @@ pub fn force_directed_layout_system(
         let d = delta.length().max(MIN_DIST);
         let dir = delta.normalize_or_zero();
         let f = K_ATT * (d - IDEAL_LEN);
+        let norm_s = 1.0 / (degree.get(&edge.source).copied().unwrap_or(1) as f32).sqrt();
+        let norm_t = 1.0 / (degree.get(&edge.target).copied().unwrap_or(1) as f32).sqrt();
         if let Some(fv) = forces.get_mut(&edge.source) {
-            *fv += dir * f;
+            *fv += dir * f * norm_s;
         }
         if let Some(fv) = forces.get_mut(&edge.target) {
-            *fv -= dir * f;
+            *fv -= dir * f * norm_t;
         }
     }
 

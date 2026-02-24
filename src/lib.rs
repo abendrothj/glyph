@@ -18,7 +18,7 @@ pub mod state;
 use bevy::prelude::*;
 use bevy_egui::{input::egui_wants_any_keyboard_input, EguiPlugin};
 
-use camera::{camera_pan_system, camera_zoom_system};
+use camera::{camera_pan_keys_system, camera_pan_system, camera_zoom_system};
 use components::MainCamera;
 use easymotion::{jump_tag_cleanup, jump_tag_setup, vim_easymotion_system, EasymotionTarget};
 use egui_overlay::{
@@ -91,6 +91,7 @@ pub fn run() {
                 toggle_command_palette_system,
                 camera_zoom_system,
                 camera_pan_system,
+                camera_pan_keys_system.run_if(vim_input_available).run_if(not(egui_wants_any_keyboard_input)),
                 save_canvas_system
                     .run_if(vim_input_available)
                     .run_if(not(egui_wants_any_keyboard_input)),

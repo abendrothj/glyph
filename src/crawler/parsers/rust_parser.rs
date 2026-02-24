@@ -4,6 +4,7 @@ use tree_sitter::{Language, Node, Parser, Query, QueryCursor};
 use tree_sitter::StreamingIterator;
 
 use super::super::{CallGraph, LanguageParser};
+use super::builtins;
 
 /// S-expression query: (1) function definitions, (2) direct calls, (3) method calls.
 /// Calls are associated with the function definition they reside within (containment).
@@ -88,7 +89,7 @@ impl LanguageParser for RustParser {
                     functions.push((start, end, text));
                 } else if cap.index == call_name_idx {
                     let callee = Self::callee_text(node, code);
-                    if !callee.is_empty() {
+                    if !callee.is_empty() && !builtins::RUST_BUILTINS.contains(callee.as_str()) {
                         calls.push((node.start_byte(), node.end_byte(), callee));
                     }
                 }
@@ -180,7 +181,7 @@ fn foo() { bar(); }
     }
 
     #[test]
-    fn parse_method_call() {
+    fn parse_method_call_filtered() {
         let p = RustParser::new();
         let code = r#"
 fn foo() {
@@ -191,7 +192,7 @@ fn foo() {
         let g = p.parse(code);
         assert!(g.contains_key("foo"));
         let callees = g.get("foo").unwrap();
-        assert!(callees.iter().any(|c| c.contains("len")));
+        assert!(callees.is_empty(), "len (std method) should be filtered out");
     }
 
     #[test]

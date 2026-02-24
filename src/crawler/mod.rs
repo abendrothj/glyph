@@ -29,15 +29,60 @@ pub trait LanguageParser: Send + Sync {
     fn parse(&self, code: &str) -> CallGraph;
 }
 
-/// Grid layout constants: start at (0,0), x += 500, wrap every 10 nodes (y += 400).
-const GRID_START_X: f32 = 0.0;
-const GRID_START_Y: f32 = 0.0;
-const GRID_STEP_X: f32 = 500.0;
-const GRID_STEP_Y: f32 = 400.0;
-const NODES_PER_ROW: usize = 10;
+/// Hierarchical flow layout: roots at top, callees below. No force layout — stays spread.
+const FLOW_ROW_HEIGHT: f32 = 380.0;
+const FLOW_NODE_SPACING: f32 = 320.0;
 
 /// Color for crawled function nodes.
 const CRAWL_NODE_COLOR: Color = Color::srgb(0.35, 0.55, 0.45);
+
+/// Compute hierarchy levels: roots (never callees) = 0, callees = 1 + max(caller level).
+fn hierarchy_levels(graph: &CallGraph, all_fns: &[String]) -> HashMap<String, usize> {
+    let mut callee_to_callers: HashMap<String, Vec<String>> = HashMap::new();
+    for (caller, callees) in graph {
+        for callee in callees {
+            callee_to_callers
+                .entry(callee.clone())
+                .or_default()
+                .push(caller.clone());
+        }
+    }
+
+    let mut level: HashMap<String, usize> = HashMap::new();
+    for name in all_fns {
+        level.insert(name.clone(), if callee_to_callers.contains_key(name) { usize::MAX } else { 0 });
+    }
+
+    let mut changed = true;
+    for _ in 0..all_fns.len() + 2 {
+        if !changed {
+            break;
+        }
+        changed = false;
+        for name in all_fns {
+            let Some(callers) = callee_to_callers.get(name) else {
+                continue;
+            };
+            let max_caller = callers.iter().filter_map(|c| level.get(c)).filter(|&l| *l != usize::MAX).max().copied();
+            let Some(mc) = max_caller else {
+                continue;
+            };
+            let new_lvl = mc + 1;
+            if level.get(name).copied().unwrap_or(0) > new_lvl {
+                level.insert(name.clone(), new_lvl);
+                changed = true;
+            }
+        }
+    }
+
+    let max_lvl = level.values().copied().filter(|&l| l != usize::MAX).max().unwrap_or(0);
+    for (_name, lvl) in level.iter_mut() {
+        if *lvl == usize::MAX {
+            *lvl = max_lvl + 1;
+        }
+    }
+    level
+}
 
 /// Ingestion system: listen for CrawlRequest, use CrawlerRouter, spawn nodes and edges.
 pub fn handle_crawl_requests(
@@ -60,11 +105,9 @@ pub fn handle_crawl_requests(
             continue;
         }
 
-        // Collect all unique function names (callers + callees).
-        let mut all_fns: std::collections::HashSet<String> = graph.keys().cloned().collect();
-        for callees in graph.values() {
-            all_fns.extend(callees.iter().cloned());
-        }
+        // Only include functions defined in the codebase (graph.keys()). Filter out std/method
+        // calls like as_mut, unwrap, iter, etc. that the parser picks up.
+        let defined: std::collections::HashSet<String> = graph.keys().cloned().collect();
 
         // Despawn existing nodes and edges.
         for entity in node_query.iter().collect::<Vec<_>>() {
@@ -76,27 +119,39 @@ pub fn handle_crawl_requests(
         spatial_index.clear();
 
         // Sort for deterministic layout.
-        let mut sorted: Vec<_> = all_fns.into_iter().collect();
+        let mut sorted: Vec<_> = defined.iter().cloned().collect();
         sorted.sort();
 
-        // Spawn nodes: grid layout — start (0,0), x += 500, wrap every 10 nodes (y += 400).
+        // Hierarchical flow layout: roots at top, callees below.
+        let levels = hierarchy_levels(&graph, &sorted);
+        let mut by_level: HashMap<usize, Vec<String>> = HashMap::new();
+        for name in &sorted {
+            let lvl = levels.get(name).copied().unwrap_or(0);
+            by_level.entry(lvl).or_default().push(name.clone());
+        }
+        let mut level_order: Vec<_> = by_level.keys().copied().collect();
+        level_order.sort();
+
         let mut name_to_entity: HashMap<String, Entity> = HashMap::new();
-        for (i, name) in sorted.iter().enumerate() {
-            let row = i / NODES_PER_ROW;
-            let col = i % NODES_PER_ROW;
-            let x = GRID_START_X + col as f32 * GRID_STEP_X;
-            let y = GRID_START_Y + row as f32 * GRID_STEP_Y;
-            let entity = spawn_node_with_color(&mut commands, x, y, name, CRAWL_NODE_COLOR);
-            name_to_entity.insert(name.clone(), entity);
+        for lvl in level_order {
+            let mut names = by_level.get(&lvl).cloned().unwrap_or_default();
+            names.sort();
+            let row_len = names.len();
+            let y = -(lvl as f32) * FLOW_ROW_HEIGHT;
+            for (i, name) in names.iter().enumerate() {
+                let x = (i as f32 - row_len as f32 * 0.5) * FLOW_NODE_SPACING;
+                let entity = spawn_node_with_color(&mut commands, x, y, name, CRAWL_NODE_COLOR);
+                name_to_entity.insert(name.clone(), entity);
+            }
         }
 
-        // Spawn edges (dedupe callees per caller).
+        // Spawn edges (dedupe callees per caller). Only link to defined functions.
         let mut edge_count = 0;
         for (caller, callees) in &graph {
             let Some(&source) = name_to_entity.get(caller) else {
                 continue;
             };
-            let seen: std::collections::HashSet<_> = callees.iter().collect();
+            let seen: std::collections::HashSet<_> = callees.iter().filter(|c| defined.contains(*c)).collect();
             for callee in seen {
                 if let Some(&target) = name_to_entity.get(callee) {
                     if source != target {
@@ -111,7 +166,7 @@ pub fn handle_crawl_requests(
             }
         }
 
-        force_layout.0 = true;
+        force_layout.0 = false; // hierarchy layout — no force collapse
 
         info!(
             "[CRAWL] Spawned {} nodes, {} edges from {}",

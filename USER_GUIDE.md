@@ -107,6 +107,8 @@ A reference for all keybindings, modes, and features. All primary bindings stay 
 |--------|--------|
 | Scroll | Zoom in/out. |
 | Middle-click drag | Pan canvas. |
+| Space + left-drag | Pan canvas (no middle button needed). |
+| Arrow keys | Pan (hold for continuous). |
 
 ---
 

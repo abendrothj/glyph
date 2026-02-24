@@ -22,12 +22,11 @@ fn crawler_e2e_app() -> App {
     app
 }
 
-/// Grid layout constants (must match crawler/mod.rs).
-const GRID_STEP_X: f32 = 500.0;
-const GRID_STEP_Y: f32 = 400.0;
+/// Hierarchy layout constants (must match crawler/mod.rs).
+const FLOW_ROW_HEIGHT: f32 = 380.0;
 
 #[test]
-fn e2e_crawl_spawns_nodes_in_grid() {
+fn e2e_crawl_spawns_nodes_in_hierarchy() {
     let dir = tempfile::tempdir().unwrap();
     let dir_path = dir.path();
 
@@ -59,30 +58,20 @@ fn baz() { foo(); }
 
     assert_eq!(nodes.len(), 3, "Expected 3 nodes (foo, bar, baz)");
 
-    let positions: Vec<(String, (f32, f32))> = nodes
+    let positions: std::collections::HashMap<String, (f32, f32)> = nodes
         .into_iter()
         .map(|(_, t, td)| (td.content.clone(), (t.translation.x, t.translation.y)))
         .collect();
 
-    for (name, (x, y)) in &positions {
-        let col = (x / GRID_STEP_X).round() as i32;
-        let row = (y / GRID_STEP_Y).round() as i32;
-        assert!(
-            (x - col as f32 * GRID_STEP_X).abs() < 1.0,
-            "{} at ({}, {}) should be on grid column",
-            name, x, y
-        );
-        assert!(
-            (y - row as f32 * GRID_STEP_Y).abs() < 1.0,
-            "{} at ({}, {}) should be on grid row",
-            name, x, y
-        );
-    }
+    // baz=root (calls no one), foo calls bar, baz calls foo → baz (top) → foo → bar (bottom)
+    let bar_y = positions.get("bar").map(|(_, y)| *y).unwrap();
+    let foo_y = positions.get("foo").map(|(_, y)| *y).unwrap();
+    let baz_y = positions.get("baz").map(|(_, y)| *y).unwrap();
 
-    let names: Vec<_> = positions.iter().map(|(n, _)| n.as_str()).collect();
-    assert!(names.contains(&"foo"));
-    assert!(names.contains(&"bar"));
-    assert!(names.contains(&"baz"));
+    assert!(baz_y > foo_y, "baz (root) should be above foo");
+    assert!(foo_y > bar_y, "foo should be above bar");
+    assert!((baz_y - foo_y - FLOW_ROW_HEIGHT).abs() < 50.0, "baz-foo spacing ~ROW_HEIGHT");
+    assert!((foo_y - bar_y - FLOW_ROW_HEIGHT).abs() < 50.0, "foo-bar spacing ~ROW_HEIGHT");
 }
 
 #[test]

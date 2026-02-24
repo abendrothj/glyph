@@ -84,6 +84,10 @@ pub fn mouse_selection_system(
     if *current_state.get() == InputMode::VimInsert {
         return;
     }
+    // Space+click: pan mode, don't select or drag
+    if keys.pressed(KeyCode::Space) {
+        return;
+    }
 
     let Ok(window) = window_q.single() else {
         return;
@@ -200,13 +204,18 @@ pub fn mouse_selection_system(
 }
 
 /// While the left mouse button is held, move the dragged node to the cursor.
+/// Space+drag pans instead, so we skip when Space is held.
 pub fn node_drag_system(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
     window_q: Query<&Window, With<PrimaryWindow>>,
     camera_q: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
     mut dragging_q: Query<(&mut Transform, &Dragging)>,
 ) {
     if !mouse_buttons.pressed(MouseButton::Left) {
+        return;
+    }
+    if keys.pressed(KeyCode::Space) {
         return;
     }
 

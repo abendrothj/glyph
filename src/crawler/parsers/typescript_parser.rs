@@ -4,6 +4,7 @@ use tree_sitter::{Language, Node, Parser, Query, QueryCursor};
 use tree_sitter::StreamingIterator;
 
 use super::super::{CallGraph, LanguageParser};
+use super::builtins;
 
 /// TypeScript: function_declaration, method_definition; call_expression.
 const TYPESCRIPT_QUERY: &str = r#"
@@ -82,7 +83,9 @@ impl LanguageParser for TypeScriptParser {
                         .unwrap_or((node.start_byte(), node.end_byte()));
                     functions.push((start, end, text));
                 } else if cap.index == call_name_idx {
-                    calls.push((node.start_byte(), node.end_byte(), text));
+                    if !builtins::TYPESCRIPT_BUILTINS.contains(text.as_str()) {
+                        calls.push((node.start_byte(), node.end_byte(), text));
+                    }
                 }
             }
         }

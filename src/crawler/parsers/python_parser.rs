@@ -4,6 +4,7 @@ use tree_sitter::{Language, Node, Parser, Query, QueryCursor};
 use tree_sitter::StreamingIterator;
 
 use super::super::{CallGraph, LanguageParser};
+use super::builtins;
 
 /// Python: function_definition with name, call with function (identifier or attribute).
 const PYTHON_QUERY: &str = r#"
@@ -80,7 +81,9 @@ impl LanguageParser for PythonParser {
                         .unwrap_or((node.start_byte(), node.end_byte()));
                     functions.push((start, end, text));
                 } else if cap.index == call_name_idx {
-                    calls.push((node.start_byte(), node.end_byte(), text));
+                    if !builtins::PYTHON_BUILTINS.contains(text.as_str()) {
+                        calls.push((node.start_byte(), node.end_byte(), text));
+                    }
                 }
             }
         }

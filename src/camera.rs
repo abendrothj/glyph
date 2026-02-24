@@ -26,15 +26,19 @@ pub fn camera_zoom_system(
     }
 }
 
-/// Middle-click pan: translate the camera in the opposite direction of mouse movement.
-/// Pan speed is proportional to the current zoom scale so that a pixel of mouse movement
-/// always corresponds to one pixel of viewport displacement.
+/// Pan: middle-click drag or Space+left-drag. Translate the camera opposite to mouse movement.
+/// Pan speed is proportional to zoom scale so one pixel of mouse movement = one pixel viewport.
 pub fn camera_pan_system(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
     mut mouse_motion: MessageReader<bevy::input::mouse::MouseMotion>,
     mut camera_q: Query<(&mut Transform, &Projection), With<MainCamera>>,
 ) {
-    if !mouse_buttons.pressed(MouseButton::Middle) {
+    let space = keys.pressed(KeyCode::Space);
+    let panning = mouse_buttons.pressed(MouseButton::Middle)
+        || (space && mouse_buttons.pressed(MouseButton::Left));
+
+    if !panning {
         for _ in mouse_motion.read() {}
         return;
     }
@@ -51,6 +55,44 @@ pub fn camera_pan_system(
         cam_transform.translation.x -= motion.delta.x * scale;
         cam_transform.translation.y += motion.delta.y * scale;
     }
+}
+
+/// Arrow keys pan the camera. Hold for continuous movement (scale-aware).
+const PAN_SPEED: f32 = 400.0; // pixels per second at scale 1.0
+
+pub fn camera_pan_keys_system(
+    keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
+    mut camera_q: Query<(&mut Transform, &Projection), With<MainCamera>>,
+) {
+    let mut dx = 0.0f32;
+    let mut dy = 0.0f32;
+    if keys.pressed(KeyCode::ArrowLeft) {
+        dx += PAN_SPEED;
+    }
+    if keys.pressed(KeyCode::ArrowRight) {
+        dx -= PAN_SPEED;
+    }
+    if keys.pressed(KeyCode::ArrowUp) {
+        dy -= PAN_SPEED;
+    }
+    if keys.pressed(KeyCode::ArrowDown) {
+        dy += PAN_SPEED;
+    }
+    if dx == 0.0 && dy == 0.0 {
+        return;
+    }
+
+    let Ok((mut cam_transform, projection)) = camera_q.single_mut() else {
+        return;
+    };
+    let scale = match projection {
+        Projection::Orthographic(ortho) => ortho.scale,
+        _ => 1.0,
+    };
+    let delta = time.delta_secs() * scale;
+    cam_transform.translation.x += dx * delta;
+    cam_transform.translation.y += dy * delta;
 }
 
 /// Computes the world-space AABB of the visible viewport from the main camera.
