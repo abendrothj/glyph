@@ -18,6 +18,7 @@ fn crawler_e2e_app() -> App {
         .init_resource::<ForceLayoutActive>()
         .init_resource::<glyph::crawler::WatchState>()
         .init_resource::<glyph::core::resources::StatusMessage>()
+        .insert_resource(glyph::core::config::GlyphConfig::default())
         .add_message::<CrawlRequest>()
         .add_systems(
             PostUpdate,

@@ -11,13 +11,46 @@ pub struct GlyphConfig {
     pub background_color: String,
     /// Default node fill color in hex format.
     pub node_color: String,
+    #[serde(default = "default_hjkl_base_speed")]
+    pub hjkl_base_speed: f32,
+    #[serde(default = "default_hjkl_accel_threshold")]
+    pub hjkl_accel_threshold: f32,
+    #[serde(default = "default_hjkl_accel_mult")]
+    pub hjkl_accel_mult: f32,
+    #[serde(default = "default_flow_row_height")]
+    pub flow_row_height: f32,
+    #[serde(default = "default_flow_node_spacing")]
+    pub flow_node_spacing: f32,
+    #[serde(default = "default_status_message_duration")]
+    pub status_message_duration: f32,
+    #[serde(default = "default_undo_history_cap")]
+    pub undo_history_cap: usize,
+    #[serde(default = "default_curve_segments")]
+    pub curve_segments: usize,
 }
+
+fn default_hjkl_base_speed() -> f32 { 10.0 }
+fn default_hjkl_accel_threshold() -> f32 { 0.25 }
+fn default_hjkl_accel_mult() -> f32 { 2.5 }
+fn default_flow_row_height() -> f32 { 380.0 }
+fn default_flow_node_spacing() -> f32 { 320.0 }
+fn default_status_message_duration() -> f32 { 4.0 }
+fn default_undo_history_cap() -> usize { 100 }
+fn default_curve_segments() -> usize { 24 }
 
 impl Default for GlyphConfig {
     fn default() -> Self {
         Self {
             background_color: "#1e1e2e".to_string(), // Catppuccin Mocha Base
             node_color: "#313244".to_string(),       // Catppuccin Mocha Surface0
+            hjkl_base_speed: default_hjkl_base_speed(),
+            hjkl_accel_threshold: default_hjkl_accel_threshold(),
+            hjkl_accel_mult: default_hjkl_accel_mult(),
+            flow_row_height: default_flow_row_height(),
+            flow_node_spacing: default_flow_node_spacing(),
+            status_message_duration: default_status_message_duration(),
+            undo_history_cap: default_undo_history_cap(),
+            curve_segments: default_curve_segments(),
         }
     }
 }
@@ -71,6 +104,7 @@ mod tests {
         let config = GlyphConfig {
             background_color: "#ff0000".to_string(),
             node_color: "#00ff00".to_string(),
+            ..Default::default()
         };
         let bg = config.bg_color();
         let srgba = bg.to_srgba();
@@ -84,6 +118,7 @@ mod tests {
         let config = GlyphConfig {
             background_color: "#000000".to_string(),
             node_color: "#00ff00".to_string(),
+            ..Default::default()
         };
         let nc = config.node_color();
         let srgba = nc.to_srgba();
@@ -97,6 +132,7 @@ mod tests {
         let config = GlyphConfig {
             background_color: "not_a_color".to_string(),
             node_color: "also_bad".to_string(),
+            ..Default::default()
         };
         // Should not panic, should fall back to defaults
         let _bg = config.bg_color();
@@ -108,11 +144,43 @@ mod tests {
         let config = GlyphConfig {
             background_color: "#282a36".to_string(),
             node_color: "#44475a".to_string(),
+            ..Default::default()
         };
         let toml_str = toml::to_string(&config).unwrap();
         let parsed: GlyphConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.background_color, "#282a36");
         assert_eq!(parsed.node_color, "#44475a");
+    }
+
+    #[test]
+    fn new_fields_roundtrip_and_default() {
+        let config = GlyphConfig {
+            background_color: "#1e1e2e".to_string(),
+            node_color: "#313244".to_string(),
+            hjkl_base_speed: 15.0,
+            hjkl_accel_threshold: 0.3,
+            hjkl_accel_mult: 3.0,
+            flow_row_height: 400.0,
+            flow_node_spacing: 350.0,
+            status_message_duration: 5.0,
+            undo_history_cap: 200,
+            curve_segments: 32,
+        };
+        let toml_str = toml::to_string(&config).unwrap();
+        let parsed: GlyphConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.hjkl_base_speed, 15.0);
+        assert_eq!(parsed.curve_segments, 32);
+        assert_eq!(parsed.undo_history_cap, 200);
+
+        // Minimal TOML (only colors) should use defaults for new fields
+        let minimal = r##"
+background_color = "#1e1e2e"
+node_color = "#313244"
+"##;
+        let parsed: GlyphConfig = toml::from_str(minimal).unwrap();
+        assert_eq!(parsed.hjkl_base_speed, 10.0);
+        assert_eq!(parsed.curve_segments, 24);
+        assert_eq!(parsed.undo_history_cap, 100);
     }
 
     #[test]

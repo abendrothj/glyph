@@ -44,6 +44,17 @@ pub struct PendingOperations {
     pub mark_jump: bool,
 }
 
+impl PendingOperations {
+    pub fn clear_all(&mut self) {
+        self.dd = false;
+        self.ge = false;
+        self.y = false;
+        self.ce = false;
+        self.mark_set = false;
+        self.mark_jump = false;
+    }
+}
+
 #[derive(Resource, Default)]
 pub struct HjklHoldTime(pub f32);
 
@@ -89,12 +100,8 @@ pub struct VimNormalParams<'w, 's> {
     pub edge_query: Query<'w, 's, (Entity, &'static Edge)>,
 }
 
-const HJKL_BASE: f32 = 10.0;
 const BACKSPACE_INITIAL_DELAY: f32 = 0.4;
 const BACKSPACE_REPEAT_INTERVAL: f32 = 0.05;
-
-const HJKL_ACCEL_THRESHOLD: f32 = 0.25;
-const HJKL_ACCEL_MULT: f32 = 2.5;
 
 fn open_in_editor(file: &str, line: u32) {
     let editor = std::env::var("EDITOR")
@@ -121,15 +128,20 @@ fn open_in_editor(file: &str, line: u32) {
     }
 }
 
-pub fn vim_normal_system(
-    mut params: VimNormalParams,
-    window_q: Query<&Window, With<PrimaryWindow>>,
-    camera_ro_q: Query<(&Camera, &GlobalTransform), With<crate::core::components::MainCamera>>,
-    mut camera_mut_q: Query<
-        &mut Transform,
-        (With<crate::core::components::MainCamera>, Without<Selected>),
-    >,
-) {
+fn is_movement_pressed(keys: &ButtonInput<KeyCode>) -> bool {
+    keys.pressed(KeyCode::KeyH)
+        || keys.pressed(KeyCode::KeyL)
+        || keys.pressed(KeyCode::KeyK)
+        || keys.pressed(KeyCode::KeyJ)
+        || keys.pressed(KeyCode::ArrowLeft)
+        || keys.pressed(KeyCode::ArrowRight)
+        || keys.pressed(KeyCode::ArrowUp)
+        || keys.pressed(KeyCode::ArrowDown)
+}
+
+// ── Command handlers ────────────────────────────────────────────────────────
+
+fn handle_undo_redo(params: &mut VimNormalParams) {
     // u: Undo
     if params.keys.just_pressed(KeyCode::KeyU) && !crate::core::helpers::ctrl_pressed(&params.keys)
     {
@@ -164,107 +176,123 @@ pub fn vim_normal_system(
             );
         }
     }
+}
 
+fn handle_command_mode_entry(params: &mut VimNormalParams) -> bool {
     let shift = crate::core::helpers::shift_pressed(&params.keys);
     if shift && params.keys.just_pressed(KeyCode::Semicolon) {
-        params.pending.dd = false;
-        params.pending.ge = false;
-        params.pending.y = false;
-        params.pending.ce = false;
-        params.pending.mark_set = false;
-        params.pending.mark_jump = false;
+        params.pending.clear_all();
         params.cmdline.text.clear();
         params.next_state.set(InputMode::VimCommand);
-        return;
+        return true;
     }
+    false
+}
 
+fn delete_selected_edge_or_node(params: &mut VimNormalParams) {
+    if let Some(edge_entity) = params.selected_edge.0 {
+        if let Ok((_, edge)) = params.edge_query.get(edge_entity) {
+            params.history.push(Action::DeleteEdge {
+                source: edge.source,
+                target: edge.target,
+                label: edge.label.clone(),
+            });
+        }
+        params.commands.entity(edge_entity).despawn();
+        params.selected_edge.0 = None;
+    } else if let Some((entity, transform, text_data, node_color, ..)) =
+        params.query.iter().next()
+    {
+        let mut node_edges = Vec::new();
+        for (_, edge) in params.edge_query.iter() {
+            if edge.source == entity || edge.target == entity {
+                node_edges.push((edge.source, edge.target, edge.label.clone()));
+            }
+        }
+        params.history.push(Action::DeleteNode {
+            pos: transform.translation.truncate(),
+            text: text_data.content.clone(),
+            color: node_color.0,
+            edges: node_edges,
+        });
+        delete_node(&mut params.commands, entity, &params.edge_query);
+    }
+}
+
+fn handle_dd_delete(params: &mut VimNormalParams) -> bool {
     if params.keys.just_pressed(KeyCode::KeyD) {
         if params.pending.ge {
             params.pending.ge = false;
-            if let Some((_, _, _, _, loc)) = params.query.iter().next() {
-                if let Some(src) = loc {
-                    open_in_editor(&src.file, src.line);
-                }
+            if let Some((_, _, _, _, Some(src))) = params.query.iter().next() {
+                open_in_editor(&src.file, src.line);
             }
-            return;
+            return true;
         }
         if params.pending.dd {
             params.pending.dd = false;
-            if let Some(edge_entity) = params.selected_edge.0 {
-                if let Ok((_, edge)) = params.edge_query.get(edge_entity) {
-                    params.history.push(Action::DeleteEdge {
-                        source: edge.source,
-                        target: edge.target,
-                        label: edge.label.clone(),
-                    });
-                }
-                params.commands.entity(edge_entity).despawn();
-                params.selected_edge.0 = None;
-            } else if let Some((entity, transform, text_data, node_color, ..)) =
-                params.query.iter().next()
-            {
-                let mut node_edges = Vec::new();
-                for (_, edge) in params.edge_query.iter() {
-                    if edge.source == entity || edge.target == entity {
-                        node_edges.push((edge.source, edge.target, edge.label.clone()));
-                    }
-                }
-                params.history.push(Action::DeleteNode {
-                    pos: transform.translation.truncate(),
-                    text: text_data.content.clone(),
-                    color: node_color.0,
-                    edges: node_edges,
-                });
-                delete_node(&mut params.commands, entity, &params.edge_query);
-            }
+            delete_selected_edge_or_node(params);
         } else {
             params.pending.dd = true;
         }
-        return;
+        return true;
     }
     if params.keys.just_pressed(KeyCode::Delete) || params.keys.just_pressed(KeyCode::Backspace) {
         params.pending.dd = false;
-        if let Some(edge_entity) = params.selected_edge.0 {
-            if let Ok((_, edge)) = params.edge_query.get(edge_entity) {
-                params.history.push(Action::DeleteEdge {
-                    source: edge.source,
-                    target: edge.target,
-                    label: edge.label.clone(),
-                });
-            }
-            params.commands.entity(edge_entity).despawn();
-            params.selected_edge.0 = None;
-        } else if let Some((entity, transform, text_data, node_color, ..)) =
-            params.query.iter().next()
-        {
-            let mut node_edges = Vec::new();
-            for (_, edge) in params.edge_query.iter() {
-                if edge.source == entity || edge.target == entity {
-                    node_edges.push((edge.source, edge.target, edge.label.clone()));
-                }
-            }
-            params.history.push(Action::DeleteNode {
-                pos: transform.translation.truncate(),
-                text: text_data.content.clone(),
-                color: node_color.0,
-                edges: node_edges,
-            });
-            delete_node(&mut params.commands, entity, &params.edge_query);
-        }
-        return;
+        delete_selected_edge_or_node(params);
+        return true;
     }
+    false
+}
 
-    if params.keys.just_pressed(KeyCode::KeyN) {
-        params.pending.dd = false;
-        params.pending.ge = false;
-        params.pending.y = false;
-        params.pending.ce = false;
-        let pos = cursor_world_pos(&window_q, &camera_ro_q).unwrap_or_else(|| {
-            viewport_center_world(&window_q, &camera_ro_q).unwrap_or(Vec2::ZERO)
+fn handle_node_creation(
+    params: &mut VimNormalParams,
+    window_q: &Query<&Window, With<PrimaryWindow>>,
+    camera_ro_q: &Query<(&Camera, &GlobalTransform), With<crate::core::components::MainCamera>>,
+) -> bool {
+    if !params.keys.just_pressed(KeyCode::KeyN) {
+        return false;
+    }
+    params.pending.clear_all();
+    let pos = cursor_world_pos(window_q, camera_ro_q).unwrap_or_else(|| {
+        viewport_center_world(window_q, camera_ro_q).unwrap_or(Vec2::ZERO)
+    });
+    for (entity, ..) in params.query.iter() {
+        params.commands.entity(entity).remove::<Selected>();
+    }
+    let entity = spawn_canvas_node(
+        &mut params.commands,
+        pos,
+        "",
+        params.config.node_color(),
+        true,
+    );
+    params.history.push(Action::CreateNode {
+        entity,
+        pos,
+        text: "".to_string(),
+        color: params.config.node_color(),
+    });
+    params.next_state.set(InputMode::VimInsert);
+    true
+}
+
+fn handle_insert_mode(
+    params: &mut VimNormalParams,
+    window_q: &Query<&Window, With<PrimaryWindow>>,
+    camera_ro_q: &Query<(&Camera, &GlobalTransform), With<crate::core::components::MainCamera>>,
+) -> bool {
+    if !params.keys.just_pressed(KeyCode::KeyI) {
+        return false;
+    }
+    params.pending.clear_all();
+    if params.selected_edge.0.is_some() {
+        params.next_state.set(InputMode::VimInsert);
+        return true;
+    }
+    if params.query.iter().next().is_none() {
+        let pos = cursor_world_pos(window_q, camera_ro_q).unwrap_or_else(|| {
+            viewport_center_world(window_q, camera_ro_q).unwrap_or(Vec2::ZERO)
         });
-        for (entity, ..) in params.query.iter() {
-            params.commands.entity(entity).remove::<Selected>();
-        }
         let entity = spawn_canvas_node(
             &mut params.commands,
             pos,
@@ -278,104 +306,72 @@ pub fn vim_normal_system(
             text: "".to_string(),
             color: params.config.node_color(),
         });
-        params.next_state.set(InputMode::VimInsert);
-        return;
     }
+    params.next_state.set(InputMode::VimInsert);
+    true
+}
 
-    if params.keys.just_pressed(KeyCode::KeyI) {
-        params.pending.dd = false;
-        params.pending.ge = false;
-        params.pending.y = false;
-        params.pending.ce = false;
-        if params.selected_edge.0.is_some() {
-            params.next_state.set(InputMode::VimInsert);
-            return;
-        }
-        if params.query.iter().next().is_none() {
-            let pos = cursor_world_pos(&window_q, &camera_ro_q).unwrap_or_else(|| {
-                viewport_center_world(&window_q, &camera_ro_q).unwrap_or(Vec2::ZERO)
-            });
-            let entity = spawn_canvas_node(
-                &mut params.commands,
-                pos,
-                "",
-                params.config.node_color(),
-                true,
-            );
-            params.history.push(Action::CreateNode {
-                entity,
-                pos,
-                text: "".to_string(),
-                color: params.config.node_color(),
-            });
-        }
-        params.next_state.set(InputMode::VimInsert);
-        return;
-    }
-
+fn handle_easymotion(params: &mut VimNormalParams) -> bool {
     if params.keys.just_pressed(KeyCode::KeyF) {
-        params.pending.dd = false;
-        params.pending.ge = false;
-        params.pending.y = false;
-        params.pending.ce = false;
+        params.pending.clear_all();
         params.commands.insert_resource(EasymotionTarget::Node);
         params.next_state.set(InputMode::VimEasymotion);
-        return;
+        return true;
     }
 
     if params.keys.just_pressed(KeyCode::KeyE) && params.pending.ge {
-        params.pending.dd = false;
-        params.pending.y = false;
-        params.pending.ge = false;
-        params.pending.ce = false;
+        params.pending.clear_all();
         params.commands.insert_resource(EasymotionTarget::EdgeLabel);
         params.next_state.set(InputMode::VimEasymotion);
-        return;
+        return true;
     }
     if params.keys.just_pressed(KeyCode::KeyG) {
         params.pending.dd = false;
         params.pending.y = false;
         params.pending.ce = false;
         params.pending.ge = true;
-        return;
+        return true;
     }
+    false
+}
 
-    if params.keys.just_pressed(KeyCode::KeyY) {
-        params.pending.dd = false;
-        params.pending.ge = false;
-        params.pending.ce = false;
-        if params.pending.y {
-            params.pending.y = false;
-            if let Some((entity, transform, text_data, node_color, _)) = params.query.iter().next()
-            {
-                let pos = transform.translation.truncate() + Vec2::new(50.0, 50.0);
-                let new_entity = spawn_node_with_color(
-                    &mut params.commands,
-                    pos.x,
-                    pos.y,
-                    &text_data.content,
-                    node_color.0,
-                );
-                params.commands.entity(entity).remove::<Selected>();
-                params.commands.entity(new_entity).insert(Selected);
-                params.history.push(Action::CreateNode {
-                    entity: new_entity,
-                    pos,
-                    text: text_data.content.clone(),
-                    color: node_color.0,
-                });
-                params.next_state.set(InputMode::VimInsert);
-            }
-        } else {
-            params.pending.y = true;
+fn handle_yy_duplicate(params: &mut VimNormalParams) -> bool {
+    if !params.keys.just_pressed(KeyCode::KeyY) {
+        return false;
+    }
+    params.pending.dd = false;
+    params.pending.ge = false;
+    params.pending.ce = false;
+    if params.pending.y {
+        params.pending.y = false;
+        if let Some((entity, transform, text_data, node_color, _)) = params.query.iter().next() {
+            let pos = transform.translation.truncate() + Vec2::new(50.0, 50.0);
+            let new_entity = spawn_node_with_color(
+                &mut params.commands,
+                pos.x,
+                pos.y,
+                &text_data.content,
+                node_color.0,
+            );
+            params.commands.entity(entity).remove::<Selected>();
+            params.commands.entity(new_entity).insert(Selected);
+            params.history.push(Action::CreateNode {
+                entity: new_entity,
+                pos,
+                text: text_data.content.clone(),
+                color: node_color.0,
+            });
+            params.next_state.set(InputMode::VimInsert);
         }
-        return;
+    } else {
+        params.pending.y = true;
     }
+    true
+}
 
+fn handle_ce_create_edge(params: &mut VimNormalParams) -> bool {
     if params.keys.just_pressed(KeyCode::KeyE) && params.pending.ce {
-        params.pending.dd = false;
-        params.pending.ge = false;
-        params.pending.ce = false;
+        params.pending.clear_all();
         if let Some((source_entity, ..)) = params.query.iter().next() {
             params
                 .commands
@@ -383,74 +379,77 @@ pub fn vim_normal_system(
             params.commands.insert_resource(EasymotionTarget::Node);
             params.next_state.set(InputMode::VimEasymotion);
         }
-        return;
+        return true;
     }
     if params.keys.just_pressed(KeyCode::KeyC) {
         params.pending.dd = false;
         params.pending.ge = false;
         params.pending.y = false;
         params.pending.ce = true;
-        return;
+        return true;
     }
+    false
+}
 
-    if params.keys.just_pressed(KeyCode::KeyA) {
-        params.pending.dd = false;
-        params.pending.ge = false;
-        params.pending.y = false;
-        params.pending.ce = false;
-        if let Some((source_entity, source_transform, ..)) = params.query.iter_mut().next() {
-            let new_pos = (source_transform.translation + Vec3::new(200.0, 0.0, 0.0)).truncate();
-            params.commands.entity(source_entity).remove::<Selected>();
-            let new_node = spawn_canvas_node(
-                &mut params.commands,
-                new_pos,
-                "",
-                params.config.node_color(),
-                true,
-            );
-            let edge_entity = params
-                .commands
-                .spawn(Edge {
-                    source: source_entity,
-                    target: new_node,
-                    label: None,
-                })
-                .id();
-            params.history.push(Action::CreateNode {
-                entity: new_node,
-                pos: new_pos,
-                text: "".to_string(),
-                color: params.config.node_color(),
-            });
-            params.history.push(Action::CreateEdge {
-                entity: edge_entity,
+fn handle_append_node(params: &mut VimNormalParams) -> bool {
+    if !params.keys.just_pressed(KeyCode::KeyA) {
+        return false;
+    }
+    params.pending.clear_all();
+    if let Some((source_entity, source_transform, ..)) = params.query.iter_mut().next() {
+        let new_pos = (source_transform.translation + Vec3::new(200.0, 0.0, 0.0)).truncate();
+        params.commands.entity(source_entity).remove::<Selected>();
+        let new_node = spawn_canvas_node(
+            &mut params.commands,
+            new_pos,
+            "",
+            params.config.node_color(),
+            true,
+        );
+        let edge_entity = params
+            .commands
+            .spawn(Edge {
                 source: source_entity,
                 target: new_node,
                 label: None,
-            });
-            params.next_state.set(InputMode::VimInsert);
-        }
-        return;
+            })
+            .id();
+        params.history.push(Action::CreateNode {
+            entity: new_node,
+            pos: new_pos,
+            text: "".to_string(),
+            color: params.config.node_color(),
+        });
+        params.history.push(Action::CreateEdge {
+            entity: edge_entity,
+            source: source_entity,
+            target: new_node,
+            label: None,
+        });
+        params.next_state.set(InputMode::VimInsert);
     }
+    true
+}
 
+fn handle_marks(
+    params: &mut VimNormalParams,
+    window_q: &Query<&Window, With<PrimaryWindow>>,
+    camera_ro_q: &Query<(&Camera, &GlobalTransform), With<crate::core::components::MainCamera>>,
+    camera_mut_q: &mut Query<
+        &mut Transform,
+        (With<crate::core::components::MainCamera>, Without<Selected>),
+    >,
+) -> bool {
     if params.keys.just_pressed(KeyCode::KeyM) {
-        params.pending.dd = false;
-        params.pending.ge = false;
-        params.pending.y = false;
-        params.pending.ce = false;
-        params.pending.mark_jump = false;
+        params.pending.clear_all();
         params.pending.mark_set = true;
-        return;
+        return true;
     }
 
     if params.keys.just_pressed(KeyCode::Quote) {
-        params.pending.dd = false;
-        params.pending.ge = false;
-        params.pending.y = false;
-        params.pending.ce = false;
-        params.pending.mark_set = false;
+        params.pending.clear_all();
         params.pending.mark_jump = true;
-        return;
+        return true;
     }
 
     if params.pending.mark_set {
@@ -458,7 +457,7 @@ pub fn vim_normal_system(
             if let Some(ch) = crate::core::helpers::keycode_to_char(key) {
                 let pos = if let Some((_, transform, ..)) = params.query.iter().next() {
                     transform.translation.truncate()
-                } else if let Some(p) = viewport_center_world(&window_q, &camera_ro_q) {
+                } else if let Some(p) = viewport_center_world(window_q, camera_ro_q) {
                     p
                 } else {
                     Vec2::ZERO
@@ -467,7 +466,7 @@ pub fn vim_normal_system(
                 info!("[MARK] set mark '{}' at {:?}", ch, pos);
             }
             params.pending.mark_set = false;
-            return;
+            return true;
         }
     }
 
@@ -483,22 +482,17 @@ pub fn vim_normal_system(
                 }
             }
             params.pending.mark_jump = false;
-            return;
+            return true;
         }
     }
+    false
+}
 
+fn handle_hjkl_movement(params: &mut VimNormalParams) {
     // Capture move end
     if let Some(start_pos) = params.start_move_pos.0 {
         if let Some((entity, transform, ..)) = params.query.iter().next() {
-            let moving = params.keys.pressed(KeyCode::KeyH)
-                || params.keys.pressed(KeyCode::KeyL)
-                || params.keys.pressed(KeyCode::KeyK)
-                || params.keys.pressed(KeyCode::KeyJ)
-                || params.keys.pressed(KeyCode::ArrowLeft)
-                || params.keys.pressed(KeyCode::ArrowRight)
-                || params.keys.pressed(KeyCode::ArrowUp)
-                || params.keys.pressed(KeyCode::ArrowDown);
-            if !moving {
+            if !is_movement_pressed(&params.keys) {
                 let end_pos = transform.translation.truncate();
                 if (start_pos - end_pos).length() > 0.1 {
                     params.history.push(Action::MoveNode {
@@ -515,23 +509,15 @@ pub fn vim_normal_system(
 
     // Node movement
     if let Some((_, mut node_transform, ..)) = params.query.iter_mut().next() {
-        let moving = params.keys.pressed(KeyCode::KeyH)
-            || params.keys.pressed(KeyCode::KeyL)
-            || params.keys.pressed(KeyCode::KeyK)
-            || params.keys.pressed(KeyCode::KeyJ)
-            || params.keys.pressed(KeyCode::ArrowLeft)
-            || params.keys.pressed(KeyCode::ArrowRight)
-            || params.keys.pressed(KeyCode::ArrowUp)
-            || params.keys.pressed(KeyCode::ArrowDown);
-        if moving {
+        if is_movement_pressed(&params.keys) {
             if params.start_move_pos.0.is_none() {
                 params.start_move_pos.0 = Some(node_transform.translation.truncate());
             }
             params.hjkl_hold.0 += params.time.delta_secs();
-            let speed = if params.hjkl_hold.0 > HJKL_ACCEL_THRESHOLD {
-                HJKL_BASE * HJKL_ACCEL_MULT
+            let speed = if params.hjkl_hold.0 > params.config.hjkl_accel_threshold {
+                params.config.hjkl_base_speed * params.config.hjkl_accel_mult
             } else {
-                HJKL_BASE
+                params.config.hjkl_base_speed
             };
             if params.keys.pressed(KeyCode::KeyH) || params.keys.pressed(KeyCode::ArrowLeft) {
                 node_transform.translation.x -= speed;
@@ -548,6 +534,32 @@ pub fn vim_normal_system(
         }
     }
 }
+
+// ── Main system orchestrator ────────────────────────────────────────────────
+
+pub fn vim_normal_system(
+    mut params: VimNormalParams,
+    window_q: Query<&Window, With<PrimaryWindow>>,
+    camera_ro_q: Query<(&Camera, &GlobalTransform), With<crate::core::components::MainCamera>>,
+    mut camera_mut_q: Query<
+        &mut Transform,
+        (With<crate::core::components::MainCamera>, Without<Selected>),
+    >,
+) {
+    handle_undo_redo(&mut params);
+    if handle_command_mode_entry(&mut params) { return; }
+    if handle_dd_delete(&mut params) { return; }
+    if handle_node_creation(&mut params, &window_q, &camera_ro_q) { return; }
+    if handle_insert_mode(&mut params, &window_q, &camera_ro_q) { return; }
+    if handle_easymotion(&mut params) { return; }
+    if handle_yy_duplicate(&mut params) { return; }
+    if handle_ce_create_edge(&mut params) { return; }
+    if handle_append_node(&mut params) { return; }
+    if handle_marks(&mut params, &window_q, &camera_ro_q, &mut camera_mut_q) { return; }
+    handle_hjkl_movement(&mut params);
+}
+
+// ── Insert mode ─────────────────────────────────────────────────────────────
 
 pub fn vim_insert_system(
     keys: Res<ButtonInput<Key>>,
@@ -679,6 +691,8 @@ pub fn vim_insert_system(
         }
     }
 }
+
+// ── Standard mode ───────────────────────────────────────────────────────────
 
 pub fn standard_mode_system(
     keys: Res<ButtonInput<KeyCode>>,

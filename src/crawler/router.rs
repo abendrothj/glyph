@@ -1,5 +1,6 @@
 //! CrawlerRouter — walkdir-based directory crawler with extension dispatch.
 
+use bevy::prelude::*;
 use std::path::Path;
 use walkdir::WalkDir;
 
@@ -58,7 +59,13 @@ impl CrawlerRouter {
             };
 
             if let Some(p) = parser {
-                if let Ok(content) = std::fs::read_to_string(path) {
+                let content = match std::fs::read_to_string(path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        warn!("[CRAWL] Could not read {}: {}", path.display(), e);
+                        continue;
+                    }
+                };
                     let rel = path
                         .strip_prefix(root_path)
                         .unwrap_or(path)
@@ -86,7 +93,6 @@ impl CrawlerRouter {
                     if !file_graph.is_empty() {
                         per_file.push((rel, abs, file_graph, line_numbers));
                     }
-                }
             }
         }
 

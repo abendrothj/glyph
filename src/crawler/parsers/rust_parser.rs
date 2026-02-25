@@ -110,5 +110,10 @@ mod tests {
         assert!(RustParser::new().parse("fn broken {").is_empty());
     }
 
+    #[test]
+    fn parse_garbage_input_returns_empty() {
+        assert!(RustParser::new().parse("\x00\x01\x02 garbage binary data").is_empty());
+    }
+
     // Logic flow map integration tests: see tests/logic_flow_map.rs
 }

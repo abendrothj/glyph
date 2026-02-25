@@ -160,14 +160,15 @@ pub fn ui_top_bar_system(
                 });
                 ui.menu_button("Edit", |ui| {
                     if ui
-                        .button(if force_layout.0 {
+                        .button(if force_layout.active {
                             "Force Layout: On"
                         } else {
                             "Force Layout: Off"
                         })
                         .clicked()
                     {
-                        force_layout.0 = !force_layout.0;
+                        force_layout.active = !force_layout.active;
+                        force_layout.iterations = 0;
                         ui.close();
                     }
                 });
@@ -538,6 +539,56 @@ pub fn ui_command_palette_system(
 
 // ── Vim command line ──────────────────────────────────────────────────────────
 
+/// Parsed vim command representation, separated from execution for testability.
+#[derive(Debug, PartialEq)]
+pub enum VimCommand<'a> {
+    Write { path: Option<&'a str> },
+    Edit { path: &'a str },
+    Crawl { path: &'a str, no_flow: bool },
+    Quit,
+    Unknown(&'a str),
+    Empty,
+}
+
+/// Parse a vim command string into a structured command.
+pub fn parse_vim_command(text: &str) -> VimCommand<'_> {
+    if text.is_empty() {
+        return VimCommand::Empty;
+    }
+    let (cmd, arg) = match text.find(' ') {
+        Some(pos) => (&text[..pos], text[pos + 1..].trim()),
+        None => (text, ""),
+    };
+    match cmd {
+        "w" | "write" => VimCommand::Write {
+            path: if arg.is_empty() { None } else { Some(arg) },
+        },
+        "e" | "edit" => {
+            if arg.is_empty() {
+                VimCommand::Unknown("e (missing path)")
+            } else {
+                VimCommand::Edit { path: arg }
+            }
+        }
+        "crawl" => {
+            if arg.is_empty() {
+                VimCommand::Unknown("crawl (missing path)")
+            } else {
+                let (path, no_flow) = if let Some(p) = arg.strip_suffix(" --no-flow") {
+                    (p.trim(), true)
+                } else if let Some(p) = arg.strip_prefix("--no-flow ") {
+                    (p.trim(), true)
+                } else {
+                    (arg, false)
+                };
+                VimCommand::Crawl { path, no_flow }
+            }
+        }
+        "q" | "quit" => VimCommand::Quit,
+        _ => VimCommand::Unknown(text),
+    }
+}
+
 /// Executes a parsed vim command. Called from `vim_cmdline_system` on Enter.
 fn execute_vim_command(
     text: &str,
@@ -852,4 +903,85 @@ pub fn ui_bottom_bar_system(
                 }
             });
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_empty() {
+        assert_eq!(parse_vim_command(""), VimCommand::Empty);
+    }
+
+    #[test]
+    fn parse_write_no_path() {
+        assert_eq!(parse_vim_command("w"), VimCommand::Write { path: None });
+        assert_eq!(parse_vim_command("write"), VimCommand::Write { path: None });
+    }
+
+    #[test]
+    fn parse_write_with_path() {
+        assert_eq!(
+            parse_vim_command("w foo.glyph"),
+            VimCommand::Write { path: Some("foo.glyph") }
+        );
+    }
+
+    #[test]
+    fn parse_edit() {
+        assert_eq!(
+            parse_vim_command("e somefile.glyph"),
+            VimCommand::Edit { path: "somefile.glyph" }
+        );
+        assert_eq!(
+            parse_vim_command("edit another.glyph"),
+            VimCommand::Edit { path: "another.glyph" }
+        );
+    }
+
+    #[test]
+    fn parse_edit_missing_path() {
+        assert!(matches!(parse_vim_command("e"), VimCommand::Unknown(_)));
+    }
+
+    #[test]
+    fn parse_crawl() {
+        assert_eq!(
+            parse_vim_command("crawl ./src"),
+            VimCommand::Crawl { path: "./src", no_flow: false }
+        );
+    }
+
+    #[test]
+    fn parse_crawl_no_flow_suffix() {
+        assert_eq!(
+            parse_vim_command("crawl ./src --no-flow"),
+            VimCommand::Crawl { path: "./src", no_flow: true }
+        );
+    }
+
+    #[test]
+    fn parse_crawl_no_flow_prefix() {
+        assert_eq!(
+            parse_vim_command("crawl --no-flow ./src"),
+            VimCommand::Crawl { path: "./src", no_flow: true }
+        );
+    }
+
+    #[test]
+    fn parse_crawl_missing_path() {
+        assert!(matches!(parse_vim_command("crawl"), VimCommand::Unknown(_)));
+    }
+
+    #[test]
+    fn parse_quit() {
+        assert_eq!(parse_vim_command("q"), VimCommand::Quit);
+        assert_eq!(parse_vim_command("quit"), VimCommand::Quit);
+    }
+
+    #[test]
+    fn parse_unknown() {
+        assert!(matches!(parse_vim_command("foobar"), VimCommand::Unknown("foobar")));
+    }
 }

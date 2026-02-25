@@ -161,4 +161,18 @@ def baz():
         let dec_edges = &g[&dec_id];
         assert!(dec_edges.iter().any(|e| e.target == "bar" && e.label.as_deref() == Some("Loop")));
     }
+
+    #[test]
+    fn parse_malformed_no_panic() {
+        // Incomplete function def
+        let result = PythonParser::new().parse("def broken(");
+        // Should not panic — may return empty or partial
+        let _ = result;
+    }
+
+    #[test]
+    fn parse_garbage_no_panic() {
+        let result = PythonParser::new().parse("\x00\x01 garbage");
+        let _ = result;
+    }
 }

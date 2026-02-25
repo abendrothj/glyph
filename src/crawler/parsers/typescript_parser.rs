@@ -185,4 +185,16 @@ function baz() {}
         let dec_edges = &g[&dec_id];
         assert!(dec_edges.iter().any(|e| e.target == "bar" && e.label.as_deref() == Some("Loop")));
     }
+
+    #[test]
+    fn parse_malformed_no_panic() {
+        let result = TypeScriptParser::new().parse("function broken( {");
+        let _ = result;
+    }
+
+    #[test]
+    fn parse_garbage_no_panic() {
+        let result = TypeScriptParser::new().parse("\x00\x01 garbage");
+        let _ = result;
+    }
 }

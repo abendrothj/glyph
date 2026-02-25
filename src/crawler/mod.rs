@@ -145,10 +145,6 @@ pub trait LanguageParser: Send + Sync {
     }
 }
 
-/// Hierarchical flow layout: roots at top, callees below. No force layout — stays spread.
-const FLOW_ROW_HEIGHT: f32 = 380.0;
-const FLOW_NODE_SPACING: f32 = 320.0;
-
 /// Color for crawled function nodes.
 const CRAWL_NODE_COLOR: Color = Color::srgb(0.35, 0.55, 0.45);
 /// Color for decision (branch) nodes.
@@ -183,11 +179,14 @@ fn hierarchy_levels(graph: &CallGraph, all_fns: &[String]) -> HashMap<String, us
     }
 
     let mut changed = true;
-    for _ in 0..all_fns.len() + 2 {
+    let max_iterations = all_fns.len() + 2;
+    let mut iteration = 0;
+    for _ in 0..max_iterations {
         if !changed {
             break;
         }
         changed = false;
+        iteration += 1;
         for name in all_fns {
             let Some(callers) = callee_to_callers.get(name) else {
                 continue;
@@ -207,6 +206,10 @@ fn hierarchy_levels(graph: &CallGraph, all_fns: &[String]) -> HashMap<String, us
                 changed = true;
             }
         }
+    }
+
+    if iteration >= max_iterations && changed {
+        warn!("[CRAWL] Cycle detected in call graph during hierarchy layout");
     }
 
     let max_lvl = level
@@ -231,6 +234,7 @@ pub fn handle_crawl_requests(
     mut crawl_events: MessageReader<CrawlRequest>,
     mut watch_state: ResMut<WatchState>,
     mut status: ResMut<crate::core::resources::StatusMessage>,
+    config: Res<crate::core::config::GlyphConfig>,
     node_query: Query<Entity, With<CanvasNode>>,
     edge_entity_query: Query<Entity, With<Edge>>,
 ) {
@@ -294,9 +298,9 @@ pub fn handle_crawl_requests(
             let mut names = by_level.get(&lvl).cloned().unwrap_or_default();
             names.sort();
             let row_len = names.len();
-            let y = -(lvl as f32) * FLOW_ROW_HEIGHT;
+            let y = -(lvl as f32) * config.flow_row_height;
             for (i, name) in names.iter().enumerate() {
-                let x = (i as f32 - row_len as f32 * 0.5) * FLOW_NODE_SPACING;
+                let x = (i as f32 - row_len as f32 * 0.5) * config.flow_node_spacing;
                 // Node IDs are namespaced: `relative/path.rs::function_name`
                 // Decision nodes: `relative/path.rs::_decision_N\x1FDISPLAY_TEXT`
                 // Detect by DECISION_SEP presence (only decision nodes contain it).
@@ -365,7 +369,7 @@ pub fn handle_crawl_requests(
             }
         }
 
-        force_layout.0 = false; // hierarchy layout — no force collapse
+        force_layout.active = false; // hierarchy layout — no force collapse
 
         let node_count = sorted.len();
         info!(
@@ -404,5 +408,63 @@ pub fn handle_crawl_requests(
             }
             Err(e) => warn!("[WATCH] Could not create watcher: {}", e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hierarchy_levels_simple_dag() {
+        let mut graph = CallGraph::new();
+        graph.insert("a".into(), vec![FlowEdge { target: "b".into(), label: None }]);
+        graph.insert("b".into(), vec![]);
+        let levels = hierarchy_levels(&graph, &["a".into(), "b".into()]);
+        assert_eq!(levels["a"], 0);
+        assert_eq!(levels["b"], 1);
+    }
+
+    #[test]
+    fn hierarchy_levels_direct_cycle() {
+        let mut graph = CallGraph::new();
+        graph.insert("a".into(), vec![FlowEdge { target: "b".into(), label: None }]);
+        graph.insert("b".into(), vec![FlowEdge { target: "a".into(), label: None }]);
+        let levels = hierarchy_levels(&graph, &["a".into(), "b".into()]);
+        // Both should get valid levels (not usize::MAX) — cycle is handled gracefully
+        assert!(levels["a"] < usize::MAX);
+        assert!(levels["b"] < usize::MAX);
+    }
+
+    #[test]
+    fn hierarchy_levels_three_node_cycle() {
+        let mut graph = CallGraph::new();
+        graph.insert("a".into(), vec![FlowEdge { target: "b".into(), label: None }]);
+        graph.insert("b".into(), vec![FlowEdge { target: "c".into(), label: None }]);
+        graph.insert("c".into(), vec![FlowEdge { target: "a".into(), label: None }]);
+        let levels = hierarchy_levels(&graph, &["a".into(), "b".into(), "c".into()]);
+        for lvl in levels.values() {
+            assert!(*lvl < usize::MAX);
+        }
+    }
+
+    #[test]
+    fn hierarchy_levels_mixed_dag_and_cycle() {
+        // root -> a -> b -> a (cycle), root -> c (no cycle)
+        let mut graph = CallGraph::new();
+        graph.insert("root".into(), vec![
+            FlowEdge { target: "a".into(), label: None },
+            FlowEdge { target: "c".into(), label: None },
+        ]);
+        graph.insert("a".into(), vec![FlowEdge { target: "b".into(), label: None }]);
+        graph.insert("b".into(), vec![FlowEdge { target: "a".into(), label: None }]);
+        graph.insert("c".into(), vec![]);
+        let fns: Vec<String> = vec!["root".into(), "a".into(), "b".into(), "c".into()];
+        let levels = hierarchy_levels(&graph, &fns);
+        assert_eq!(levels["root"], 0);
+        assert_eq!(levels["c"], 1);
+        // a and b are in a cycle but reachable from root — should get valid levels
+        assert!(levels["a"] < usize::MAX);
+        assert!(levels["b"] < usize::MAX);
     }
 }

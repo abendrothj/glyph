@@ -4,9 +4,15 @@ use bevy::prelude::*;
 
 use crate::core::components::{CanvasNode, Dragging, Edge};
 
-/// When true, force-directed layout runs each frame to untangle nodes.
+/// When active, force-directed layout runs each frame to untangle nodes.
 #[derive(Resource, Default)]
-pub struct ForceLayoutActive(pub bool);
+pub struct ForceLayoutActive {
+    pub active: bool,
+    pub iterations: u32,
+}
+
+const MAX_ITERATIONS: u32 = 500;
+const CONVERGENCE_THRESHOLD: f32 = 0.5;
 
 /// Repulsion strength between nodes.
 const K_REP: f32 = 25000.0;
@@ -25,12 +31,12 @@ const DT: f32 = 1.0 / 50.0;
 
 /// Apply force-directed layout: repulsion between nodes, attraction along edges.
 pub fn force_directed_layout_system(
-    layout_active: Res<ForceLayoutActive>,
+    mut layout_active: ResMut<ForceLayoutActive>,
     mut node_query: Query<(Entity, &mut Transform), With<CanvasNode>>,
     edge_query: Query<&Edge>,
     dragging_query: Query<Entity, With<Dragging>>,
 ) {
-    if !layout_active.0 {
+    if !layout_active.active {
         return;
     }
 
@@ -96,6 +102,20 @@ pub fn force_directed_layout_system(
         if let Some(fv) = forces.get_mut(&edge.target) {
             *fv -= dir * f * norm_t;
         }
+    }
+
+    // Convergence check
+    let total_force: f32 = forces.values().map(|f| f.length()).sum();
+    layout_active.iterations += 1;
+
+    if total_force < CONVERGENCE_THRESHOLD || layout_active.iterations >= MAX_ITERATIONS {
+        layout_active.active = false;
+        info!(
+            "[LAYOUT] Converged after {} iterations (total_force={:.2})",
+            layout_active.iterations, total_force
+        );
+        layout_active.iterations = 0;
+        return;
     }
 
     // Apply forces

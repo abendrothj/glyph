@@ -19,6 +19,7 @@ fn io_test_app() -> App {
         .init_resource::<CurrentFile>()
         .init_resource::<PendingLoad>()
         .init_resource::<RecentFiles>()
+        .init_resource::<glyph::core::resources::StatusMessage>()
         .init_resource::<TestSavePath>()
         .add_systems(Startup, |mut commands: Commands| {
             let n1 = spawn_node_with_color(&mut commands, 100.0, 200.0, "hello", Color::srgb(0.5, 0.6, 0.7));

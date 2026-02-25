@@ -56,6 +56,7 @@ fn vim_input_available(palette: Res<CommandPaletteState>, state: Res<State<Input
 pub fn run() {
     use std::io::{IsTerminal, Read};
     let app_config = core::config::load_config();
+    let undo_cap = app_config.undo_history_cap;
 
     let mut stdin_snapshot = None;
     if !std::io::stdin().is_terminal() {
@@ -119,7 +120,7 @@ pub fn run() {
     .init_resource::<RecentFiles>()
     .init_resource::<crawler::WatchState>()
     .init_resource::<core::marks::Marks>()
-    .init_resource::<core::history::UndoHistory>()
+    .insert_resource(core::history::UndoHistory { cap: undo_cap, ..Default::default() })
     // new status message resource used for command feedback/errors
     .init_resource::<core::resources::StatusMessage>()
     .init_resource::<LastEmptyClick>()

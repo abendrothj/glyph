@@ -41,17 +41,28 @@ pub enum Action {
     },
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct UndoHistory {
     pub undo_stack: Vec<Action>,
     pub redo_stack: Vec<Action>,
+    pub cap: usize,
+}
+
+impl Default for UndoHistory {
+    fn default() -> Self {
+        Self {
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            cap: 100,
+        }
+    }
 }
 
 impl UndoHistory {
     pub fn push(&mut self, action: Action) {
         self.undo_stack.push(action);
         self.redo_stack.clear();
-        if self.undo_stack.len() > 100 {
+        if self.undo_stack.len() > self.cap {
             self.undo_stack.remove(0);
         }
     }
@@ -137,12 +148,16 @@ pub fn apply_action(
                 if let Ok(mut e_cmd) = commands.get_entity(*entity) {
                     e_cmd.despawn();
                 }
-            } else {
+            } else if commands.get_entity(*source).is_ok()
+                && commands.get_entity(*target).is_ok()
+            {
                 commands.spawn(Edge {
                     source: *source,
                     target: *target,
                     label: label.clone(),
                 });
+            } else {
+                warn!("[UNDO] Skipping edge redo: source or target entity missing");
             }
         }
         Action::DeleteEdge {
@@ -151,11 +166,17 @@ pub fn apply_action(
             label,
         } => {
             if revert {
-                commands.spawn(Edge {
-                    source: *source,
-                    target: *target,
-                    label: label.clone(),
-                });
+                if commands.get_entity(*source).is_ok()
+                    && commands.get_entity(*target).is_ok()
+                {
+                    commands.spawn(Edge {
+                        source: *source,
+                        target: *target,
+                        label: label.clone(),
+                    });
+                } else {
+                    warn!("[UNDO] Skipping edge undelete: source or target entity missing");
+                }
             } else {
                 for (e, edge) in edge_query.iter() {
                     if edge.source == *source && edge.target == *target && edge.label == *label {

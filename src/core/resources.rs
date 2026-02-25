@@ -134,4 +134,48 @@ mod tests {
         idx.clear();
         assert!(idx.entities_in_bounds(-1000.0, 1000.0, -1000.0, 1000.0).is_empty());
     }
+
+    #[test]
+    fn two_entities_same_cell_remove_one() {
+        let mut idx = SpatialIndex::default();
+        idx.insert(entity(1), (0, 0));
+        idx.insert(entity(2), (0, 0));
+        idx.remove(entity(1));
+        let results = idx.entities_in_bounds(0.0, CELL_SIZE - 1.0, 0.0, CELL_SIZE - 1.0);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], entity(2));
+    }
+
+    #[test]
+    fn entity_migration_between_cells() {
+        let mut idx = SpatialIndex::default();
+        idx.insert(entity(1), (0, 0));
+        // Re-insert at a different cell (migration)
+        idx.insert(entity(1), (1, 0));
+        // Old cell should be empty
+        let old_cell = idx.entities_in_bounds(0.0, CELL_SIZE - 1.0, 0.0, CELL_SIZE - 1.0);
+        assert!(old_cell.is_empty());
+        // New cell should have the entity
+        let new_cell = idx.entities_in_bounds(CELL_SIZE, 2.0 * CELL_SIZE - 1.0, 0.0, CELL_SIZE - 1.0);
+        assert_eq!(new_cell.len(), 1);
+        assert_eq!(new_cell[0], entity(1));
+    }
+
+    #[test]
+    fn negative_cell_coordinates() {
+        let mut idx = SpatialIndex::default();
+        idx.insert(entity(1), (-1, -1));
+        let results = idx.entities_in_bounds(-CELL_SIZE, -1.0, -CELL_SIZE, -1.0);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], entity(1));
+    }
+
+    #[test]
+    fn zero_width_bounds() {
+        let mut idx = SpatialIndex::default();
+        idx.insert(entity(1), (0, 0));
+        // Bounds where min == max (single point query)
+        let results = idx.entities_in_bounds(0.0, 0.0, 0.0, 0.0);
+        assert_eq!(results.len(), 1);
+    }
 }

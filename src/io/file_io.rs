@@ -20,7 +20,9 @@ const MAX_RECENT: usize = 10;
 pub fn workflows_dir() -> PathBuf {
     let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let dir = base.join(WORKFLOWS_DIR);
-    let _ = std::fs::create_dir_all(&dir); // no-op if exists
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        warn!("[IO] Failed to create workflows dir: {}", e);
+    }
     dir
 }
 
@@ -36,7 +38,13 @@ pub fn load_recent() -> Vec<PathBuf> {
     let Ok(data) = std::fs::read_to_string(&path) else {
         return Vec::new();
     };
-    serde_json::from_str(&data).unwrap_or_default()
+    match serde_json::from_str(&data) {
+        Ok(paths) => paths,
+        Err(e) => {
+            warn!("[IO] Failed to parse recent files: {}", e);
+            Vec::new()
+        }
+    }
 }
 
 /// Save recent files to disk.
@@ -44,10 +52,18 @@ pub fn save_recent(paths: &[PathBuf]) {
     let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let path = base.join(RECENT_FILE);
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            warn!("[IO] Failed to create parent dir for recent: {}", e);
+            return;
+        }
     }
-    if let Ok(file) = std::fs::File::create(&path) {
-        let _ = serde_json::to_writer(file, paths);
+    match std::fs::File::create(&path) {
+        Ok(file) => {
+            if let Err(e) = serde_json::to_writer(file, paths) {
+                warn!("[IO] Failed to write recent files: {}", e);
+            }
+        }
+        Err(e) => warn!("[IO] Failed to create recent file: {}", e),
     }
 }
 
@@ -279,6 +295,7 @@ pub fn load_from_path(
 pub fn save_canvas_system(
     keys: Res<ButtonInput<KeyCode>>,
     mut current_file: ResMut<CurrentFile>,
+    mut status: ResMut<crate::core::resources::StatusMessage>,
     node_query: Query<(Entity, &Transform, &TextData, &NodeColor), With<CanvasNode>>,
     edge_query: Query<(Entity, &Edge)>,
     camera_query: Query<(&Transform, &Projection), With<MainCamera>>,
@@ -299,9 +316,15 @@ pub fn save_canvas_system(
     match save_to_path(&path, &node_query, &edge_query, cam_prefs) {
         Ok(()) => {
             current_file.0 = Some(path.clone());
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+            status.set(format!("Saved {}", name));
             info!("[SAVE] Saved to {}", path.display());
         }
-        Err(e) => error!("[SAVE] Failed: {}", e),
+        Err(e) => {
+            let msg = format!("Save failed: {}", e);
+            error!("[SAVE] {}", msg);
+            status.set(msg);
+        }
     }
 }
 
@@ -310,6 +333,7 @@ pub fn save_canvas_system(
 pub fn process_pending_load_system(
     mut pending: ResMut<PendingLoad>,
     mut recent: ResMut<RecentFiles>,
+    mut status: ResMut<crate::core::resources::StatusMessage>,
     commands: Commands,
     spatial_index: ResMut<crate::core::resources::SpatialIndex>,
     current_file: ResMut<CurrentFile>,
@@ -331,9 +355,15 @@ pub fn process_pending_load_system(
     ) {
         Ok(()) => {
             add_to_recent(&mut recent, path.clone());
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+            status.set(format!("Loaded {}", name));
             info!("[LOAD] Loaded from {}", path.display());
         }
-        Err(e) => error!("[LOAD] {}", e),
+        Err(e) => {
+            let msg = format!("Load failed: {}", e);
+            error!("[LOAD] {}", msg);
+            status.set(msg);
+        }
     }
 }
 
