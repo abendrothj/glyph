@@ -532,6 +532,7 @@ fn execute_vim_command(
     current_file: &mut CurrentFile,
     recent: &mut RecentFiles,
     pending_load: &mut PendingLoad,
+    status: &mut crate::resources::StatusMessage,
     node_query: &Query<
         (Entity, &Transform, &crate::components::TextData, &crate::components::NodeColor),
         With<CanvasNode>,
@@ -565,25 +566,33 @@ fn execute_vim_command(
                 Ok(()) => {
                     current_file.0 = Some(path.clone());
                     add_to_recent(recent, path.clone());
+                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+                    status.set(format!("Saved {}", name));
                     info!("[CMD] :w → saved to {}", path.display());
                 }
-                Err(e) => error!("[CMD] :w failed: {}", e),
+                Err(e) => {
+                    status.set(format!("Error: {}", e));
+                    error!("[CMD] :w failed: {}", e);
+                }
             }
         }
         "e" | "edit" => {
             if arg.is_empty() {
+                status.set("error: :e requires a path");
                 warn!("[CMD] :e requires a path");
             } else {
                 let path = std::path::PathBuf::from(arg);
                 if path.exists() {
                     pending_load.0 = Some(path);
                 } else {
+                    status.set(format!("error: file not found: {}", arg));
                     warn!("[CMD] :e — file not found: {}", arg);
                 }
             }
         }
         "crawl" => {
             if arg.is_empty() {
+                status.set("error: :crawl requires a path");
                 warn!("[CMD] :crawl requires a path");
             } else {
                 let (path, no_flow) = if let Some(p) = arg.strip_suffix(" --no-flow") {
@@ -604,7 +613,10 @@ fn execute_vim_command(
             info!("[CMD] :q");
             std::process::exit(0);
         }
-        _ => warn!("[CMD] Unknown command: :{}", text),
+        _ => {
+            status.set(format!("error: unknown command: :{}", text));
+            warn!("[CMD] Unknown command: :{}", text);
+        }
     }
 }
 
@@ -618,6 +630,7 @@ pub fn vim_cmdline_system(
     mut current_file: ResMut<CurrentFile>,
     mut recent: ResMut<RecentFiles>,
     mut pending_load: ResMut<PendingLoad>,
+    mut status: ResMut<crate::resources::StatusMessage>,
     node_query: Query<
         (Entity, &Transform, &crate::components::TextData, &crate::components::NodeColor),
         With<CanvasNode>,
@@ -649,6 +662,7 @@ pub fn vim_cmdline_system(
             &mut current_file,
             &mut recent,
             &mut pending_load,
+            &mut status,
             &node_query,
             &edge_query,
             &camera_query,
@@ -723,12 +737,24 @@ pub fn ui_legend_system(
         });
 }
 
+/// Decrement the status message timer each frame so messages fade out.
+pub fn status_message_tick_system(
+    time: Res<Time>,
+    mut status: ResMut<crate::resources::StatusMessage>,
+) {
+    if status.timer > 0.0 {
+        status.timer = (status.timer - time.delta_secs()).max(0.0);
+    }
+}
+
 /// Bottom bar: mode indicator and vim command line.
 /// Shows `-- MODE --` normally; shows `:[text]|` in VimCommand.
+/// A status message (crawl result / error) is shown on the right when active.
 pub fn ui_bottom_bar_system(
     mut contexts: EguiContexts,
     state: Res<State<crate::state::InputMode>>,
     cmdline: Res<VimCmdLine>,
+    status: Res<crate::resources::StatusMessage>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
@@ -737,41 +763,59 @@ pub fn ui_bottom_bar_system(
     egui::TopBottomPanel::bottom("bottom_bar")
         .default_height(22.0)
         .show(ctx, |ui| {
-            ui.horizontal(|ui| match state.get() {
-                crate::state::InputMode::VimCommand => {
-                    ui.label(
-                        egui::RichText::new(format!(":{}|", cmdline.text))
-                            .monospace()
-                            .color(egui::Color32::WHITE),
-                    );
+            ui.horizontal(|ui| {
+                match state.get() {
+                    crate::state::InputMode::VimCommand => {
+                        ui.label(
+                            egui::RichText::new(format!(":{}|", cmdline.text))
+                                .monospace()
+                                .color(egui::Color32::WHITE),
+                        );
+                    }
+                    crate::state::InputMode::VimNormal => {
+                        ui.label(
+                            egui::RichText::new("-- NORMAL --")
+                                .strong()
+                                .color(egui::Color32::WHITE),
+                        );
+                    }
+                    crate::state::InputMode::VimInsert => {
+                        ui.label(
+                            egui::RichText::new("-- INSERT --")
+                                .strong()
+                                .color(egui::Color32::from_rgb(100, 200, 120)),
+                        );
+                    }
+                    crate::state::InputMode::VimEasymotion => {
+                        ui.label(
+                            egui::RichText::new("-- JUMP --")
+                                .strong()
+                                .color(egui::Color32::from_rgb(240, 200, 60)),
+                        );
+                    }
+                    crate::state::InputMode::Standard => {
+                        ui.label(
+                            egui::RichText::new("-- STANDARD --")
+                                .strong()
+                                .color(egui::Color32::from_rgb(160, 140, 220)),
+                        );
+                    }
                 }
-                crate::state::InputMode::VimNormal => {
-                    ui.label(
-                        egui::RichText::new("-- NORMAL --")
-                            .strong()
-                            .color(egui::Color32::WHITE),
-                    );
-                }
-                crate::state::InputMode::VimInsert => {
-                    ui.label(
-                        egui::RichText::new("-- INSERT --")
-                            .strong()
-                            .color(egui::Color32::from_rgb(100, 200, 120)),
-                    );
-                }
-                crate::state::InputMode::VimEasymotion => {
-                    ui.label(
-                        egui::RichText::new("-- JUMP --")
-                            .strong()
-                            .color(egui::Color32::from_rgb(240, 200, 60)),
-                    );
-                }
-                crate::state::InputMode::Standard => {
-                    ui.label(
-                        egui::RichText::new("-- STANDARD --")
-                            .strong()
-                            .color(egui::Color32::from_rgb(160, 140, 220)),
-                    );
+
+                // Status / error message — right-aligned, fades over the last second.
+                if status.timer > 0.0 && !status.text.is_empty() {
+                    let alpha = (status.timer.min(1.0) * 255.0) as u8;
+                    let is_error = status.text.starts_with("crawl: ")
+                        || status.text.starts_with("Error")
+                        || status.text.starts_with("error");
+                    let color = if is_error {
+                        egui::Color32::from_rgba_premultiplied(240, 100, 80, alpha)
+                    } else {
+                        egui::Color32::from_rgba_premultiplied(100, 220, 130, alpha)
+                    };
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(egui::RichText::new(&status.text).color(color));
+                    });
                 }
             });
         });

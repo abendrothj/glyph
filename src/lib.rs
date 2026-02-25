@@ -78,6 +78,8 @@ pub fn run() {
         .init_resource::<ForceLayoutActive>()
         .init_resource::<RecentFiles>()
         .init_resource::<crawler::WatchState>()
+        // new status message resource used for command feedback/errors
+        .init_resource::<resources::StatusMessage>()
         .add_systems(Startup, |mut recent: ResMut<RecentFiles>| {
             let _ = workflows_dir(); // ensure workflows folder exists
             recent.0 = load_recent();
@@ -162,6 +164,7 @@ pub fn run() {
         .add_systems(bevy_egui::EguiPrimaryContextPass, ui_bottom_bar_system)
         .add_systems(bevy_egui::EguiPrimaryContextPass, ui_legend_system)
         .add_systems(Update, process_pending_file_dialog_system)
+        .add_systems(Update, crate::egui_overlay::status_message_tick_system)
         .run();
 }
 

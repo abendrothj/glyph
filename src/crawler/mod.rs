@@ -210,6 +210,7 @@ pub fn handle_crawl_requests(
     mut force_layout: ResMut<ForceLayoutActive>,
     mut crawl_events: MessageReader<CrawlRequest>,
     mut watch_state: ResMut<WatchState>,
+    mut status: ResMut<crate::resources::StatusMessage>,
     node_query: Query<Entity, With<CanvasNode>>,
     edge_entity_query: Query<Entity, With<Edge>>,
 ) {
@@ -219,9 +220,25 @@ pub fn handle_crawl_requests(
             continue;
         }
 
-        let (graph, source_map) = CrawlerRouter::crawl(path, ev.no_flow);
+        // Resolve relative paths (../.. , ./src, etc.) to absolute so that
+        // SourceMap entries are always absolute and `gd` works correctly.
+        let abs_root = std::path::Path::new(path)
+            .canonicalize()
+            .unwrap_or_else(|_| std::path::PathBuf::from(path));
+
+        if !abs_root.exists() || !abs_root.is_dir() {
+            let msg = format!("crawl: path not found: {}", path);
+            warn!("[CRAWL] {}", msg);
+            status.set(msg);
+            continue;
+        }
+
+        let abs_root_str = abs_root.to_string_lossy().into_owned();
+        let (graph, source_map) = CrawlerRouter::crawl(&abs_root_str, ev.no_flow);
         if graph.is_empty() {
+            let msg = format!("crawl: no functions found in {}", path);
             warn!("[CRAWL] No functions found in {}", path);
+            status.set(msg);
             continue;
         }
 
@@ -324,22 +341,22 @@ pub fn handle_crawl_requests(
 
         force_layout.0 = false; // hierarchy layout — no force collapse
 
+        let node_count = sorted.len();
         info!(
             "[CRAWL] Spawned {} nodes, {} edges from {}",
-            sorted.len(),
+            node_count,
             edge_count,
-            path
+            abs_root_str
         );
+        status.set(format!("Crawled: {} nodes, {} edges", node_count, edge_count));
 
         // ── Start/restart the file-system watcher ────────────────────────────
         watch_state.no_flow = ev.no_flow;
-        watch_state.watch_path = Some(path.to_string());
+        watch_state.watch_path = Some(abs_root_str.clone());
         watch_state.last_event = None;
 
         use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-        let abs = std::path::Path::new(path)
-            .canonicalize()
-            .unwrap_or_else(|_| std::path::PathBuf::from(path));
+        let abs = abs_root.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         match RecommendedWatcher::new(
             move |res| { let _ = tx.send(res); },

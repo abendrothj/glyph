@@ -24,6 +24,21 @@ pub struct SpatialIndex {
 #[derive(Resource, Default)]
 pub struct SelectedEdge(pub Option<Entity>);
 
+/// Transient status / error message displayed in the bottom bar.
+/// `timer` counts down in seconds; the message is visible while `timer > 0`.
+#[derive(Resource, Default)]
+pub struct StatusMessage {
+    pub text: String,
+    pub timer: f32,
+}
+
+impl StatusMessage {
+    pub fn set(&mut self, text: impl Into<String>) {
+        self.text = text.into();
+        self.timer = 4.0;
+    }
+}
+
 impl SpatialIndex {
     pub fn world_to_cell(translation: Vec3) -> (i32, i32) {
         (
