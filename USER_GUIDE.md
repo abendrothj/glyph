@@ -86,6 +86,8 @@ A reference for all keybindings, modes, and features. All primary bindings stay 
 | Delete Selected Node | Remove selected node and edges. |
 | Clear Canvas | Remove all nodes and edges. |
 | Edge Labels | Edit labels for each edge (A → B: [label]). |
+| :crawl [path] | Crawl a codebase to generate a Spatial Flow Graph. |
+| :trace flow | Interactive Threat Mapping to trace data flow from Source to Sink. |
 | Esc or Ctrl+[ | Close palette. |
 
 ---

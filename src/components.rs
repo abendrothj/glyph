@@ -72,3 +72,7 @@ pub struct SourceLocation {
 /// Marker on the small filename Text2d rendered at the bottom of crawled nodes.
 #[derive(Component)]
 pub struct FileLabel;
+
+/// Marker for nodes and edges that are part of a traced data flow path.
+#[derive(Component)]
+pub struct TracedPath;

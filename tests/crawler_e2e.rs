@@ -17,7 +17,10 @@ fn crawler_e2e_app() -> App {
         .init_resource::<SpatialIndex>()
         .init_resource::<ForceLayoutActive>()
         .add_message::<CrawlRequest>()
-        .add_systems(PostUpdate, (update_spatial_index_system, spatial_index_cleanup_system))
+        .add_systems(
+            PostUpdate,
+            (update_spatial_index_system, spatial_index_cleanup_system),
+        )
         .add_systems(Update, handle_crawl_requests);
     app
 }
@@ -41,8 +44,10 @@ fn baz() { foo(); }
     .unwrap();
 
     let mut app = crawler_e2e_app();
-    app.world_mut()
-        .write_message(CrawlRequest { path: dir_path.to_str().unwrap().to_string() });
+    app.world_mut().write_message(CrawlRequest {
+        path: dir_path.to_str().unwrap().to_string(),
+        no_flow: false,
+    });
 
     app.update();
 
@@ -70,8 +75,14 @@ fn baz() { foo(); }
 
     assert!(baz_y > foo_y, "baz (root) should be above foo");
     assert!(foo_y > bar_y, "foo should be above bar");
-    assert!((baz_y - foo_y - FLOW_ROW_HEIGHT).abs() < 50.0, "baz-foo spacing ~ROW_HEIGHT");
-    assert!((foo_y - bar_y - FLOW_ROW_HEIGHT).abs() < 50.0, "foo-bar spacing ~ROW_HEIGHT");
+    assert!(
+        (baz_y - foo_y - FLOW_ROW_HEIGHT).abs() < 50.0,
+        "baz-foo spacing ~ROW_HEIGHT"
+    );
+    assert!(
+        (foo_y - bar_y - FLOW_ROW_HEIGHT).abs() < 50.0,
+        "foo-bar spacing ~ROW_HEIGHT"
+    );
 }
 
 #[test]
@@ -89,8 +100,10 @@ fn caller() { callee(); }
     .unwrap();
 
     let mut app = crawler_e2e_app();
-    app.world_mut()
-        .write_message(CrawlRequest { path: dir_path.to_str().unwrap().to_string() });
+    app.world_mut().write_message(CrawlRequest {
+        path: dir_path.to_str().unwrap().to_string(),
+        no_flow: false,
+    });
 
     app.update();
 
@@ -109,7 +122,9 @@ fn caller() { callee(); }
     let callee_entity = name_to_entity["callee"];
 
     let edges: Vec<_> = world.query::<&Edge>().iter(world).collect();
-    let has_caller_to_callee = edges.iter().any(|e| e.source == caller_entity && e.target == callee_entity);
+    let has_caller_to_callee = edges
+        .iter()
+        .any(|e| e.source == caller_entity && e.target == callee_entity);
 
     assert!(
         has_caller_to_callee,
@@ -140,8 +155,10 @@ fn e() {}
     .unwrap();
 
     let mut app = crawler_e2e_app();
-    app.world_mut()
-        .write_message(CrawlRequest { path: dir_path.to_str().unwrap().to_string() });
+    app.world_mut().write_message(CrawlRequest {
+        path: dir_path.to_str().unwrap().to_string(),
+        no_flow: false,
+    });
 
     app.update();
 
@@ -162,7 +179,11 @@ fn e() {}
                 assert!(
                     dist > 50.0,
                     "Nodes should not overlap: ({}, {}) and ({}, {}) are too close (dist={})",
-                    x1, y1, x2, y2, dist
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    dist
                 );
             }
         }

@@ -7,7 +7,7 @@ use bevy::window::PrimaryWindow;
 use crate::components::{Edge, NodeColor, Selected, SourceLocation, TextData};
 use crate::easymotion::EasymotionTarget;
 use crate::egui_overlay::VimCmdLine;
-use crate::helpers::{delete_node, spawn_node_with_color, spawn_canvas_node};
+use crate::helpers::{delete_node, spawn_canvas_node, spawn_node_with_color};
 use crate::resources::SelectedEdge;
 use crate::state::InputMode;
 
@@ -32,21 +32,16 @@ fn viewport_center_world(
     camera.viewport_to_world_2d(cam_transform, center).ok()
 }
 
-/// Tracks dd sequence: first d sets pending, second d deletes.
+/// Group of all vim operation pending states to stay under Bevy's 16 parameter system limit
 #[derive(Resource, Default)]
-pub struct PendingDDelete(pub bool);
-
-/// Tracks ge sequence: g then e → easymotion for edge label edit.
-#[derive(Resource, Default)]
-pub struct PendingGE(pub bool);
-
-/// Tracks yy sequence for duplicate node.
-#[derive(Resource, Default)]
-pub struct PendingY(pub bool);
-
-/// Tracks ce sequence: connect selected to existing (via easymotion).
-#[derive(Resource, Default)]
-pub struct PendingCE(pub bool);
+pub struct PendingOperations {
+    pub dd: bool,
+    pub ge: bool,
+    pub y: bool,
+    pub ce: bool,
+    pub mark_set: bool,
+    pub mark_jump: bool,
+}
 
 /// Hold time for hjkl acceleration. Resets when key released.
 #[derive(Resource, Default)]
@@ -94,7 +89,10 @@ fn open_in_editor(file: &str, line: u32) {
         let safe_file = file.replace('\'', r"'\''");
         let cmd = format!("{} +{} '{}'", editor, line, safe_file);
         let _ = std::process::Command::new("osascript")
-            .args(["-e", &format!("tell application \"Terminal\" to do script \"{}\"", cmd)])
+            .args([
+                "-e",
+                &format!("tell application \"Terminal\" to do script \"{}\"", cmd),
+            ])
             .spawn();
     }
 }
@@ -106,24 +104,37 @@ pub fn vim_normal_system(
     mut next_state: ResMut<NextState<InputMode>>,
     mut commands: Commands,
     mut selected_edge: ResMut<SelectedEdge>,
-    mut query: Query<(Entity, &mut Transform, &TextData, &NodeColor, Option<&SourceLocation>), With<Selected>>,
-    mut pending_dd: ResMut<PendingDDelete>,
-    mut pending_ge: ResMut<PendingGE>,
-    mut pending_y: ResMut<PendingY>,
-    mut pending_ce: ResMut<PendingCE>,
+    mut query: Query<
+        (
+            Entity,
+            &mut Transform,
+            &TextData,
+            &NodeColor,
+            Option<&SourceLocation>,
+        ),
+        With<Selected>,
+    >,
+    mut pending: ResMut<PendingOperations>,
     mut hjkl_hold: ResMut<HjklHoldTime>,
     mut cmdline: ResMut<VimCmdLine>,
+    mut marks: ResMut<crate::marks::Marks>,
     edge_query: Query<(Entity, &Edge)>,
     window_q: Query<&Window, With<PrimaryWindow>>,
-    camera_q: Query<(&Camera, &GlobalTransform), With<crate::components::MainCamera>>,
+    camera_ro_q: Query<(&Camera, &GlobalTransform), With<crate::components::MainCamera>>,
+    mut camera_mut_q: Query<
+        &mut Transform,
+        (With<crate::components::MainCamera>, Without<Selected>),
+    >,
 ) {
     // `:` (Shift+;) — enter command-line mode
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     if shift && keys.just_pressed(KeyCode::Semicolon) {
-        pending_dd.0 = false;
-        pending_ge.0 = false;
-        pending_y.0 = false;
-        pending_ce.0 = false;
+        pending.dd = false;
+        pending.ge = false;
+        pending.y = false;
+        pending.ce = false;
+        pending.mark_set = false;
+        pending.mark_jump = false;
         cmdline.text.clear();
         next_state.set(InputMode::VimCommand);
         info!("→ VimCommand");
@@ -133,8 +144,8 @@ pub fn vim_normal_system(
     // dd or Delete/Backspace: delete selected edge (if SelectedEdge) or selected node
     // gd (g then d): go to definition — open source file in editor at the function's line.
     if keys.just_pressed(KeyCode::KeyD) {
-        if pending_ge.0 {
-            pending_ge.0 = false;
+        if pending.ge {
+            pending.ge = false;
             if let Ok((_, _, _, _, loc)) = query.single() {
                 if let Some(src) = loc {
                     open_in_editor(&src.file, src.line);
@@ -145,8 +156,8 @@ pub fn vim_normal_system(
             }
             return;
         }
-        if pending_dd.0 {
-            pending_dd.0 = false;
+        if pending.dd {
+            pending.dd = false;
             if let Some(edge_entity) = selected_edge.0 {
                 commands.entity(edge_entity).despawn();
                 selected_edge.0 = None;
@@ -156,12 +167,12 @@ pub fn vim_normal_system(
                 info!("[DELETE] dd → removed node {:?}", entity);
             }
         } else {
-            pending_dd.0 = true;
+            pending.dd = true;
         }
         return;
     }
     if keys.just_pressed(KeyCode::Delete) || keys.just_pressed(KeyCode::Backspace) {
-        pending_dd.0 = false;
+        pending.dd = false;
         if let Some(edge_entity) = selected_edge.0 {
             commands.entity(edge_entity).despawn();
             selected_edge.0 = None;
@@ -175,12 +186,12 @@ pub fn vim_normal_system(
 
     // n or N: create new node at cursor (or viewport center) — home row
     if keys.just_pressed(KeyCode::KeyN) {
-        pending_dd.0 = false;
-        pending_ge.0 = false;
-        pending_y.0 = false;
-        pending_ce.0 = false;
-        let pos = cursor_world_pos(&window_q, &camera_q).unwrap_or_else(|| {
-            viewport_center_world(&window_q, &camera_q).unwrap_or(Vec2::ZERO)
+        pending.dd = false;
+        pending.ge = false;
+        pending.y = false;
+        pending.ce = false;
+        let pos = cursor_world_pos(&window_q, &camera_ro_q).unwrap_or_else(|| {
+            viewport_center_world(&window_q, &camera_ro_q).unwrap_or(Vec2::ZERO)
         });
         for (entity, ..) in &query {
             commands.entity(entity).remove::<Selected>();
@@ -193,18 +204,18 @@ pub fn vim_normal_system(
 
     // i: insert mode. If edge selected, edit its label. If node selected, edit its text. If no selection, create node first.
     if keys.just_pressed(KeyCode::KeyI) {
-        pending_dd.0 = false;
-        pending_ge.0 = false;
-        pending_y.0 = false;
-        pending_ce.0 = false;
+        pending.dd = false;
+        pending.ge = false;
+        pending.y = false;
+        pending.ce = false;
         if selected_edge.0.is_some() {
             next_state.set(InputMode::VimInsert);
             info!("→ VimInsert (edge label)");
             return;
         }
         if query.single_mut().is_err() {
-            let pos = cursor_world_pos(&window_q, &camera_q).unwrap_or_else(|| {
-                viewport_center_world(&window_q, &camera_q).unwrap_or(Vec2::ZERO)
+            let pos = cursor_world_pos(&window_q, &camera_ro_q).unwrap_or_else(|| {
+                viewport_center_world(&window_q, &camera_ro_q).unwrap_or(Vec2::ZERO)
             });
             spawn_canvas_node(&mut commands, pos, "", true);
             info!("[CREATE] i (no selection) → new node at {:?}", pos);
@@ -215,10 +226,10 @@ pub fn vim_normal_system(
     }
 
     if keys.just_pressed(KeyCode::KeyF) {
-        pending_dd.0 = false;
-        pending_ge.0 = false;
-        pending_y.0 = false;
-        pending_ce.0 = false;
+        pending.dd = false;
+        pending.ge = false;
+        pending.y = false;
+        pending.ce = false;
         commands.insert_resource(EasymotionTarget::Node);
         next_state.set(InputMode::VimEasymotion);
         info!("→ VimEasymotion (nodes)");
@@ -226,36 +237,37 @@ pub fn vim_normal_system(
     }
 
     // ge: easymotion for edge label edit — letters on edges, pick one → VimInsert
-    if keys.just_pressed(KeyCode::KeyE) && pending_ge.0 {
-        pending_dd.0 = false;
-        pending_y.0 = false;
-        pending_ge.0 = false;
-        pending_ce.0 = false;
+    if keys.just_pressed(KeyCode::KeyE) && pending.ge {
+        pending.dd = false;
+        pending.y = false;
+        pending.ge = false;
+        pending.ce = false;
         commands.insert_resource(EasymotionTarget::EdgeLabel);
         next_state.set(InputMode::VimEasymotion);
         info!("→ VimEasymotion (edge labels)");
         return;
     }
     if keys.just_pressed(KeyCode::KeyG) {
-        pending_dd.0 = false;
-        pending_y.0 = false;
-        pending_ce.0 = false;
-        pending_ge.0 = true;
+        pending.dd = false;
+        pending.y = false;
+        pending.ce = false;
+        pending.ge = true;
         return;
     }
 
     // yy: duplicate selected node
     if keys.just_pressed(KeyCode::KeyY) {
-        pending_dd.0 = false;
-        pending_ge.0 = false;
-        pending_ce.0 = false;
-        if pending_y.0 {
-            pending_y.0 = false;
+        pending.dd = false;
+        pending.ge = false;
+        pending.ce = false;
+        if pending.y {
+            pending.y = false;
             if let Ok((entity, transform, text_data, node_color, _)) = query.single() {
                 let pos = transform.translation.truncate() + Vec2::new(50.0, 50.0);
                 let new_entity = spawn_node_with_color(
                     &mut commands,
-                    pos.x, pos.y,
+                    pos.x,
+                    pos.y,
                     &text_data.content,
                     node_color.0,
                 );
@@ -265,16 +277,16 @@ pub fn vim_normal_system(
                 info!("[DUPLICATE] yy → {:?}", new_entity);
             }
         } else {
-            pending_y.0 = true;
+            pending.y = true;
         }
         return;
     }
 
     // ce: connect selected to existing (enters easymotion to pick target node)
-    if keys.just_pressed(KeyCode::KeyE) && pending_ce.0 {
-        pending_dd.0 = false;
-        pending_ge.0 = false;
-        pending_ce.0 = false;
+    if keys.just_pressed(KeyCode::KeyE) && pending.ce {
+        pending.dd = false;
+        pending.ge = false;
+        pending.ce = false;
         if let Ok((source_entity, ..)) = query.single() {
             commands.insert_resource(EasymotionConnectSource(Some(source_entity)));
             commands.insert_resource(EasymotionTarget::Node);
@@ -284,19 +296,19 @@ pub fn vim_normal_system(
         return;
     }
     if keys.just_pressed(KeyCode::KeyC) {
-        pending_dd.0 = false;
-        pending_ge.0 = false;
-        pending_y.0 = false;
-        pending_ce.0 = true;
+        pending.dd = false;
+        pending.ge = false;
+        pending.y = false;
+        pending.ce = true;
         return;
     }
 
     // a: add edge + new node (requires selection)
     if keys.just_pressed(KeyCode::KeyA) {
-        pending_dd.0 = false;
-        pending_ge.0 = false;
-        pending_y.0 = false;
-        pending_ce.0 = false;
+        pending.dd = false;
+        pending.ge = false;
+        pending.y = false;
+        pending.ce = false;
         if let Ok((source_entity, source_transform, ..)) = query.single_mut() {
             let new_pos = (source_transform.translation + Vec3::new(200.0, 0.0, 0.0)).truncate();
             commands.entity(source_entity).remove::<Selected>();
@@ -310,6 +322,69 @@ pub fn vim_normal_system(
             info!("[GRAPH] Edge {:?} → {:?}", source_entity, new_node);
         }
         return;
+    }
+
+    // m: Start mark set sequence
+    if keys.just_pressed(KeyCode::KeyM) {
+        pending.dd = false;
+        pending.ge = false;
+        pending.y = false;
+        pending.ce = false;
+        pending.mark_jump = false;
+        pending.mark_set = true;
+        return;
+    }
+
+    // ': Start mark jump sequence (Apostrophe is Quote)
+    if keys.just_pressed(KeyCode::Quote) {
+        pending.dd = false;
+        pending.ge = false;
+        pending.y = false;
+        pending.ce = false;
+        pending.mark_set = false;
+        pending.mark_jump = true;
+        return;
+    }
+
+    // Handle second character for mark setting
+    if pending.mark_set {
+        if let Some(key) = keys.get_just_pressed().next() {
+            if let Some(ch) = crate::helpers::keycode_to_char(key) {
+                // Determine the position to save. If there's a selected node, use its pos.
+                // Otherwise use the viewport center.
+                let pos = if let Ok((_, transform, ..)) = query.single() {
+                    transform.translation.truncate()
+                } else if let Some(p) = viewport_center_world(&window_q, &camera_ro_q) {
+                    p
+                } else {
+                    Vec2::ZERO
+                };
+                crate::marks::set_mark(&mut marks, ch, pos);
+                info!("[MARK] set mark '{}' at {:?}", ch, pos);
+                // Also show it in the status message
+                // This requires adding StatusMessage as a ResMut to vim_normal_system. Wait, it's easier to just log it for now and update later if needed.
+            }
+            pending.mark_set = false;
+            return;
+        }
+    }
+
+    // Handle second character for mark jumping
+    if pending.mark_jump {
+        if let Some(key) = keys.get_just_pressed().next() {
+            if let Some(ch) = crate::helpers::keycode_to_char(key) {
+                if let Some(pos) = crate::marks::get_mark(&marks, ch) {
+                    // Update camera position
+                    if let Ok(mut cam_transform) = camera_mut_q.single_mut() {
+                        cam_transform.translation.x = pos.x;
+                        cam_transform.translation.y = pos.y;
+                        info!("[MARK] jumped to mark '{}' at {:?}", ch, pos);
+                    }
+                }
+            }
+            pending.mark_jump = false;
+            return;
+        }
     }
 
     let Ok((_, mut transform, ..)) = query.single_mut() else {
@@ -327,10 +402,10 @@ pub fn vim_normal_system(
         || keys.pressed(KeyCode::ArrowUp)
         || keys.pressed(KeyCode::ArrowDown);
     if moving {
-        pending_dd.0 = false;
-        pending_ge.0 = false;
-        pending_y.0 = false;
-        pending_ce.0 = false;
+        pending.dd = false;
+        pending.ge = false;
+        pending.y = false;
+        pending.ce = false;
         hjkl_hold.0 += time.delta_secs();
     } else {
         hjkl_hold.0 = 0.0;
@@ -370,9 +445,7 @@ pub fn vim_insert_system(
     let ctrl = keycodes.pressed(KeyCode::ControlLeft) || keycodes.pressed(KeyCode::ControlRight);
 
     // Esc or Ctrl+[ → normal (Ctrl+[ is home-row friendly)
-    if keys.just_pressed(Key::Escape)
-        || (ctrl && keycodes.just_pressed(KeyCode::BracketLeft))
-    {
+    if keys.just_pressed(Key::Escape) || (ctrl && keycodes.just_pressed(KeyCode::BracketLeft)) {
         if let Some(edge_entity) = selected_edge.0 {
             if let Ok(mut edge) = edge_query.get_mut(edge_entity) {
                 if edge.label.as_deref() == Some("") {
@@ -394,9 +467,10 @@ pub fn vim_insert_system(
             let label = edge.label.as_mut().unwrap();
 
             // Backspace or Ctrl+h
-            let backspace_pressed = keys.pressed(Key::Backspace) || (ctrl && keycodes.pressed(KeyCode::KeyH));
-            let backspace_just = keys.just_pressed(Key::Backspace)
-                || (ctrl && keycodes.just_pressed(KeyCode::KeyH));
+            let backspace_pressed =
+                keys.pressed(Key::Backspace) || (ctrl && keycodes.pressed(KeyCode::KeyH));
+            let backspace_just =
+                keys.just_pressed(Key::Backspace) || (ctrl && keycodes.just_pressed(KeyCode::KeyH));
             if backspace_pressed {
                 let mut do_delete = backspace_just;
                 if backspace_just {
@@ -427,9 +501,10 @@ pub fn vim_insert_system(
     }
 
     // Editing node text when a node is selected
-    let backspace_pressed = keys.pressed(Key::Backspace) || (ctrl && keycodes.pressed(KeyCode::KeyH));
-    let backspace_just = keys.just_pressed(Key::Backspace)
-        || (ctrl && keycodes.just_pressed(KeyCode::KeyH));
+    let backspace_pressed =
+        keys.pressed(Key::Backspace) || (ctrl && keycodes.pressed(KeyCode::KeyH));
+    let backspace_just =
+        keys.just_pressed(Key::Backspace) || (ctrl && keycodes.just_pressed(KeyCode::KeyH));
     if backspace_pressed {
         let mut do_delete = backspace_just;
         if backspace_just {
@@ -468,9 +543,7 @@ pub fn standard_mode_system(
     mut next_state: ResMut<NextState<InputMode>>,
 ) {
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
-    if keys.just_pressed(KeyCode::Escape)
-        || (ctrl && keys.just_pressed(KeyCode::BracketLeft))
-    {
+    if keys.just_pressed(KeyCode::Escape) || (ctrl && keys.just_pressed(KeyCode::BracketLeft)) {
         next_state.set(InputMode::VimNormal);
         info!("→ VimNormal");
     } else if keys.just_pressed(KeyCode::KeyI) && selected_edge.0.is_some() {

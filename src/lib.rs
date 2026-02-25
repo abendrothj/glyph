@@ -10,6 +10,7 @@ pub mod helpers;
 pub mod input;
 pub mod io;
 pub mod layout;
+pub mod marks;
 pub mod rendering;
 pub mod resources;
 pub mod selection;
@@ -19,7 +20,10 @@ pub mod state;
 use bevy::prelude::*;
 use bevy_egui::{input::egui_wants_any_keyboard_input, EguiPlugin};
 
-use camera::{camera_pan_keys_system, camera_pan_system, camera_zoom_keys_system, camera_zoom_system};
+use camera::{
+    camera_pan_keys_system, camera_pan_system, camera_zoom_keys_system, camera_zoom_system,
+};
+use cluster::cluster_blobs_system;
 use components::MainCamera;
 use easymotion::{jump_tag_cleanup, jump_tag_setup, vim_easymotion_system, EasymotionTarget};
 use egui_overlay::{
@@ -27,8 +31,11 @@ use egui_overlay::{
     ui_command_palette_system, ui_legend_system, ui_top_bar_system, vim_cmdline_system,
     CommandPaletteState, VimCmdLine,
 };
-use input::{standard_mode_system, vim_insert_system, vim_normal_system, PendingDDelete};
-use io::{load_canvas_system, load_recent, process_pending_load_system, save_canvas_system, workflows_dir, CurrentFile, PendingLoad, RecentFiles};
+use input::{standard_mode_system, vim_insert_system, vim_normal_system};
+use io::{
+    load_canvas_system, load_recent, process_pending_load_system, save_canvas_system,
+    workflows_dir, CurrentFile, PendingLoad, RecentFiles,
+};
 use layout::{force_directed_layout_system, ForceLayoutActive};
 use rendering::{
     draw_edges_system, draw_selection_system, sync_edge_labels_system, sync_text_system,
@@ -38,16 +45,12 @@ use selection::{
     edge_draw_drop_system, edge_draw_preview_system, mouse_selection_system, node_drag_system,
     node_drop_system, DrawingEdge, LastEmptyClick,
 };
-use cluster::cluster_blobs_system;
 use spatial::{spatial_index_cleanup_system, update_spatial_index_system};
 use state::InputMode;
 
 /// Run Vim/input systems only when command palette is closed, not in command-line
 /// mode, and egui is not consuming keyboard input (e.g. typing in search bar).
-fn vim_input_available(
-    palette: Res<CommandPaletteState>,
-    state: Res<State<InputMode>>,
-) -> bool {
+fn vim_input_available(palette: Res<CommandPaletteState>, state: Res<State<InputMode>>) -> bool {
     !palette.is_open && *state.get() != InputMode::VimCommand
 }
 
@@ -62,10 +65,7 @@ pub fn run() {
         .init_resource::<CurrentFile>()
         .init_resource::<CommandPaletteState>()
         .init_resource::<VimCmdLine>()
-        .init_resource::<PendingDDelete>()
-        .init_resource::<input::PendingGE>()
-        .init_resource::<input::PendingY>()
-        .init_resource::<input::PendingCE>()
+        .init_resource::<input::PendingOperations>()
         .init_resource::<input::HjklHoldTime>()
         .init_resource::<input::EasymotionConnectSource>()
         .init_resource::<input::BackspaceHoldTime>()
@@ -78,6 +78,7 @@ pub fn run() {
         .init_resource::<ForceLayoutActive>()
         .init_resource::<RecentFiles>()
         .init_resource::<crawler::WatchState>()
+        .init_resource::<marks::Marks>()
         // new status message resource used for command feedback/errors
         .init_resource::<resources::StatusMessage>()
         .add_systems(Startup, |mut recent: ResMut<RecentFiles>| {
@@ -85,15 +86,13 @@ pub fn run() {
             recent.0 = load_recent();
         })
         .add_message::<crawler::CrawlRequest>()
+        .add_message::<crawler::TraceRequest>()
         .add_systems(Startup, (setup_canvas, setup_gizmo_line_width))
         .add_systems(OnEnter(InputMode::VimEasymotion), jump_tag_setup)
         .add_systems(OnExit(InputMode::VimEasymotion), jump_tag_cleanup)
         .add_systems(
             PostUpdate,
-            (
-                update_spatial_index_system,
-                spatial_index_cleanup_system,
-            ),
+            (update_spatial_index_system, spatial_index_cleanup_system),
         )
         .add_systems(
             Update,
@@ -104,7 +103,9 @@ pub fn run() {
                     .run_if(vim_input_available)
                     .run_if(not(egui_wants_any_keyboard_input)),
                 camera_pan_system,
-                camera_pan_keys_system.run_if(vim_input_available).run_if(not(egui_wants_any_keyboard_input)),
+                camera_pan_keys_system
+                    .run_if(vim_input_available)
+                    .run_if(not(egui_wants_any_keyboard_input)),
                 save_canvas_system
                     .run_if(vim_input_available)
                     .run_if(not(egui_wants_any_keyboard_input)),
@@ -113,6 +114,7 @@ pub fn run() {
                     .run_if(not(egui_wants_any_keyboard_input)),
                 process_pending_load_system,
                 crawler::handle_crawl_requests,
+                crawler::tracing::handle_trace_requests,
                 crawler::watch_trigger_system,
                 mouse_selection_system,
                 node_drag_system
@@ -136,8 +138,7 @@ pub fn run() {
                     .run_if(in_state(InputMode::VimEasymotion))
                     .run_if(vim_input_available)
                     .run_if(not(egui_wants_any_keyboard_input)),
-                vim_cmdline_system
-                    .run_if(in_state(InputMode::VimCommand)),
+                vim_cmdline_system.run_if(in_state(InputMode::VimCommand)),
             ),
         )
         .add_systems(

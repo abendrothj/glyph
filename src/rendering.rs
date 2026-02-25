@@ -3,7 +3,7 @@
 use bevy::prelude::*;
 use std::f32::consts::PI;
 
-use crate::components::{Edge, EdgeLabel, Selected, TextData, TextLabel};
+use crate::components::{Edge, EdgeLabel, Selected, TextData, TextLabel, TracedPath};
 use crate::state::InputMode;
 
 /// Number of segments for approximating Bezier curves.
@@ -25,16 +25,20 @@ fn bezier_tangent(p0: Vec2, p1: Vec2, p2: Vec2, t: f32) -> Vec2 {
 /// Edges between the same node pair alternate curve direction for efficient, non-overlapping layout.
 pub fn draw_edges_system(
     mut gizmos: Gizmos,
-    edge_query: Query<(Entity, &Edge)>,
+    edge_query: Query<(Entity, &Edge, Option<&TracedPath>)>,
     transform_query: Query<&Transform>,
 ) {
-    let edge_color = Color::srgb(0.22, 0.32, 0.48);
-    // Group edges by (source, target) so we alternate direction within each pair
-    let mut groups: std::collections::HashMap<(Entity, Entity), Vec<Entity>> =
+    let default_edge_color = Color::srgb(0.22, 0.32, 0.48);
+    let traced_edge_color = Color::srgb(1.0, 0.2, 0.2); // Bright red
+                                                        // Group edges by (source, target) so we alternate direction within each pair
+    let mut groups: std::collections::HashMap<(Entity, Entity), Vec<(Entity, bool)>> =
         std::collections::HashMap::new();
-    for (entity, edge) in &edge_query {
+    for (entity, edge, traced) in &edge_query {
         let key = (edge.source, edge.target);
-        groups.entry(key).or_default().push(entity);
+        groups
+            .entry(key)
+            .or_default()
+            .push((entity, traced.is_some()));
     }
     for ((source, target), entities) in groups {
         let Ok(src) = transform_query.get(source) else {
@@ -51,14 +55,19 @@ pub fn draw_edges_system(
         // Larger offset so curves are clearly visible on the canvas.
         let curve_mag = (dist * 0.35).clamp(35.0, 180.0);
         let perp = Vec2::new(-dir.y, dir.x);
-        for (idx, _) in entities.iter().enumerate() {
+        for (idx, (_, is_traced)) in entities.iter().enumerate() {
+            let color = if *is_traced {
+                traced_edge_color
+            } else {
+                default_edge_color
+            };
             let sign = if idx % 2 == 0 { 1.0 } else { -1.0 };
             let p1 = mid + perp * curve_mag * sign;
             let mut prev = p0;
             for i in 1..=CURVE_SEGMENTS {
                 let t = i as f32 / CURVE_SEGMENTS as f32;
                 let pt = bezier_point(p0, p1, p2, t);
-                gizmos.line_2d(prev, pt, edge_color);
+                gizmos.line_2d(prev, pt, color);
                 prev = pt;
             }
         }
@@ -71,11 +80,7 @@ const LABEL_OFFSET_ABOVE: f32 = 18.0;
 pub const LABEL_HIT_HALF: Vec2 = Vec2::new(50.0, 12.0);
 
 /// Compute label world position for an edge (above curve midpoint). Used by sync and hit-test.
-pub fn edge_label_world_pos(
-    src: &Transform,
-    tgt: &Transform,
-    idx: usize,
-) -> (Vec2, f32) {
+pub fn edge_label_world_pos(src: &Transform, tgt: &Transform, idx: usize) -> (Vec2, f32) {
     let p0 = src.translation.truncate();
     let p2 = tgt.translation.truncate();
     let mid = (p0 + p2) * 0.5;
@@ -107,7 +112,10 @@ mod tests {
         let (pos1, _) = edge_label_world_pos(&src, &tgt, 1);
         assert!((pos0.x - 100.0).abs() < 1.0, "label x near midpoint");
         assert!((pos1.x - 100.0).abs() < 1.0, "label x near midpoint");
-        assert!(pos0.y != pos1.y, "idx 0 and 1 offset in opposite directions");
+        assert!(
+            pos0.y != pos1.y,
+            "idx 0 and 1 offset in opposite directions"
+        );
     }
 
     #[test]
@@ -118,7 +126,10 @@ mod tests {
         let mid = Vec2::new(50.0, 50.0);
         let dist = pos.distance(mid);
         assert!(dist > 10.0, "label offset from midpoint");
-        assert!(angle.abs() < std::f32::consts::PI + 0.1, "angle in valid range");
+        assert!(
+            angle.abs() < std::f32::consts::PI + 0.1,
+            "angle in valid range"
+        );
     }
 }
 
@@ -173,7 +184,10 @@ pub fn sync_edge_labels_system(
             let label_entity = commands
                 .spawn((
                     Text2d::new(label_text),
-                    TextFont { font_size: 12.0, ..default() },
+                    TextFont {
+                        font_size: 12.0,
+                        ..default()
+                    },
                     TextColor(Color::srgb(0.5, 0.55, 0.65)),
                     Transform::from_xyz(label_pos.x, label_pos.y, 1.0)
                         .with_rotation(Quat::from_rotation_z(angle)),
@@ -192,6 +206,7 @@ pub fn sync_edge_labels_system(
 pub fn draw_selection_system(
     mut gizmos: Gizmos,
     selected_query: Query<&Transform, With<Selected>>,
+    traced_nodes: Query<&Transform, With<TracedPath>>,
     selected_edge: Res<crate::resources::SelectedEdge>,
     edge_query: Query<(Entity, &Edge)>,
     node_transform_query: Query<&Transform, Without<EdgeLabel>>,
@@ -232,6 +247,15 @@ pub fn draw_selection_system(
                 return;
             }
         }
+    }
+
+    // Draw a red outline around all traced nodes.
+    for transform in &traced_nodes {
+        gizmos.rect_2d(
+            Isometry2d::from_translation(transform.translation.truncate()),
+            Vec2::new(170.0, 130.0),
+            Color::srgb(1.0, 0.2, 0.2), // Bright red
+        );
     }
 
     let Ok(transform) = selected_query.single() else {

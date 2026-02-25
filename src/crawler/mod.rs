@@ -4,17 +4,19 @@
 
 pub mod parsers;
 mod router;
+pub mod tracing;
 
-use bevy::prelude::*;
-use parsers::walker::DECISION_SEP;
-use std::collections::HashMap;
-use std::path::Path;
 use crate::components::{CanvasNode, Edge, FileLabel, SourceLocation};
 use crate::helpers::spawn_node_with_color;
 use crate::layout::ForceLayoutActive;
 use crate::resources::SpatialIndex;
+use bevy::prelude::*;
+use parsers::walker::DECISION_SEP;
+use std::collections::HashMap;
+use std::path::Path;
 
 pub use router::CrawlerRouter;
+pub use tracing::TraceRequest;
 
 // ── File-system watcher ────────────────────────────────────────────────────────
 
@@ -92,7 +94,10 @@ pub fn watch_trigger_system(
             watch.last_event = None;
             if let Some(path) = watch.watch_path.clone() {
                 info!("[WATCH] Re-crawling {} (file changed)", path);
-                crawl_events.write(CrawlRequest { path, no_flow: watch.no_flow });
+                crawl_events.write(CrawlRequest {
+                    path,
+                    no_flow: watch.no_flow,
+                });
             }
         }
     }
@@ -106,7 +111,6 @@ pub struct CrawlRequest {
     /// resulting graph contains only function nodes. Pass `--no-flow` to `:crawl`.
     pub no_flow: bool,
 }
-
 
 /// FlowEdge: labeled edge in the flow map.
 #[derive(Clone, Debug)]
@@ -145,7 +149,6 @@ pub trait LanguageParser: Send + Sync {
 const FLOW_ROW_HEIGHT: f32 = 380.0;
 const FLOW_NODE_SPACING: f32 = 320.0;
 
-
 /// Color for crawled function nodes.
 const CRAWL_NODE_COLOR: Color = Color::srgb(0.35, 0.55, 0.45);
 /// Color for decision (branch) nodes.
@@ -169,7 +172,14 @@ fn hierarchy_levels(graph: &CallGraph, all_fns: &[String]) -> HashMap<String, us
 
     let mut level: HashMap<String, usize> = HashMap::new();
     for name in all_fns {
-        level.insert(name.clone(), if callee_to_callers.contains_key(name) { usize::MAX } else { 0 });
+        level.insert(
+            name.clone(),
+            if callee_to_callers.contains_key(name) {
+                usize::MAX
+            } else {
+                0
+            },
+        );
     }
 
     let mut changed = true;
@@ -182,7 +192,12 @@ fn hierarchy_levels(graph: &CallGraph, all_fns: &[String]) -> HashMap<String, us
             let Some(callers) = callee_to_callers.get(name) else {
                 continue;
             };
-            let max_caller = callers.iter().filter_map(|c| level.get(c)).filter(|&l| *l != usize::MAX).max().copied();
+            let max_caller = callers
+                .iter()
+                .filter_map(|c| level.get(c))
+                .filter(|&l| *l != usize::MAX)
+                .max()
+                .copied();
             let Some(mc) = max_caller else {
                 continue;
             };
@@ -194,7 +209,12 @@ fn hierarchy_levels(graph: &CallGraph, all_fns: &[String]) -> HashMap<String, us
         }
     }
 
-    let max_lvl = level.values().copied().filter(|&l| l != usize::MAX).max().unwrap_or(0);
+    let max_lvl = level
+        .values()
+        .copied()
+        .filter(|&l| l != usize::MAX)
+        .max()
+        .unwrap_or(0);
     for (_name, lvl) in level.iter_mut() {
         if *lvl == usize::MAX {
             *lvl = max_lvl + 1;
@@ -281,12 +301,15 @@ pub fn handle_crawl_requests(
                 // Decision nodes: `relative/path.rs::_decision_N\x1FDISPLAY_TEXT`
                 // Detect by DECISION_SEP presence (only decision nodes contain it).
                 let is_decision = name.contains(DECISION_SEP);
-                let color = if is_decision { DECISION_NODE_COLOR } else { CRAWL_NODE_COLOR };
+                let color = if is_decision {
+                    DECISION_NODE_COLOR
+                } else {
+                    CRAWL_NODE_COLOR
+                };
                 // Strip the namespace prefix (split at first "::"), then strip the
                 // decision-node ID prefix (split at DECISION_SEP) to get display text.
                 let after_ns = name.splitn(2, "::").nth(1).unwrap_or(name.as_str());
-                let display_name =
-                    after_ns.splitn(2, DECISION_SEP).nth(1).unwrap_or(after_ns);
+                let display_name = after_ns.splitn(2, DECISION_SEP).nth(1).unwrap_or(after_ns);
                 let entity = spawn_node_with_color(&mut commands, x, y, display_name, color);
                 name_to_entity.insert(name.clone(), entity);
 
@@ -308,7 +331,10 @@ pub fn handle_crawl_requests(
                     commands.entity(entity).with_children(|parent| {
                         parent.spawn((
                             Text2d::new(basename),
-                            TextFont { font_size: 9.0, ..default() },
+                            TextFont {
+                                font_size: 9.0,
+                                ..default()
+                            },
                             TextColor(Color::srgba(0.65, 0.70, 0.75, 0.65)),
                             Transform::from_xyz(0.0, -48.0, 1.0),
                             FileLabel,
@@ -344,11 +370,12 @@ pub fn handle_crawl_requests(
         let node_count = sorted.len();
         info!(
             "[CRAWL] Spawned {} nodes, {} edges from {}",
-            node_count,
-            edge_count,
-            abs_root_str
+            node_count, edge_count, abs_root_str
         );
-        status.set(format!("Crawled: {} nodes, {} edges", node_count, edge_count));
+        status.set(format!(
+            "Crawled: {} nodes, {} edges",
+            node_count, edge_count
+        ));
 
         // ── Start/restart the file-system watcher ────────────────────────────
         watch_state.no_flow = ev.no_flow;
@@ -359,7 +386,9 @@ pub fn handle_crawl_requests(
         let abs = abs_root.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         match RecommendedWatcher::new(
-            move |res| { let _ = tx.send(res); },
+            move |res| {
+                let _ = tx.send(res);
+            },
             notify::Config::default(),
         ) {
             Ok(mut watcher) => {
