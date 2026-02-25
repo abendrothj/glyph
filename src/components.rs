@@ -58,3 +58,17 @@ pub struct MainCamera;
 pub struct Dragging {
     pub offset: Vec2,
 }
+
+/// Source file location for a crawled node.
+/// Absent on hand-drawn nodes; present whenever the crawler spawned the node.
+#[derive(Component, Clone)]
+pub struct SourceLocation {
+    /// Absolute path to the source file containing this function.
+    pub file: String,
+    /// 1-indexed line number of the function definition.
+    pub line: u32,
+}
+
+/// Marker on the small filename Text2d rendered at the bottom of crawled nodes.
+#[derive(Component)]
+pub struct FileLabel;

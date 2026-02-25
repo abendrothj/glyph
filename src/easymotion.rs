@@ -19,6 +19,17 @@ pub enum EasymotionTarget {
     EdgeLabel,
 }
 
+const TAG_CHARS: &str = "abcdefghijklmnopqrstuvwxyz";
+
+/// Sort order for jump tags: top-to-bottom, then left-to-right.
+/// This makes tag assignment spatially predictable — the top-left node is always
+/// 'a', the next one right is 'b', etc. — so users can build spatial muscle memory.
+fn sort_by_position(a: &Vec2, b: &Vec2) -> std::cmp::Ordering {
+    b.y.partial_cmp(&a.y)
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then(a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
+}
+
 /// OnEnter(VimEasymotion): assign letter tags to visible nodes or edges based on EasymotionTarget.
 pub fn jump_tag_setup(
     mut commands: Commands,
@@ -41,7 +52,7 @@ pub fn jump_tag_setup(
     let (min_x, max_x, min_y, max_y) = viewport_world_bounds(camera, cam_transform, viewport_size);
 
     if *target == EasymotionTarget::EdgeLabel {
-        // Assign letters to edges whose label position is in viewport
+        // Build per-(source, target) index for multi-edge offset calculation.
         let mut groups: std::collections::HashMap<(Entity, Entity), Vec<Entity>> =
             std::collections::HashMap::new();
         for (entity, edge) in &edge_query {
@@ -58,7 +69,8 @@ pub fn jump_tag_setup(
             }
         }
 
-        let mut visible_edges: Vec<(Entity, Vec2)> = Vec::new();
+        // Collect in-viewport edges with their label world positions.
+        let mut visible: Vec<(Entity, Vec2)> = Vec::new();
         for (edge_entity, edge) in &edge_query {
             let Ok(src) = node_transform_query.get(edge.source) else {
                 continue;
@@ -68,46 +80,73 @@ pub fn jump_tag_setup(
             };
             let idx = idx_map.get(&edge_entity).copied().unwrap_or(0);
             let (label_pos, _) = edge_label_world_pos(src, tgt, idx);
-            if label_pos.x >= min_x && label_pos.x <= max_x
-                && label_pos.y >= min_y && label_pos.y <= max_y
+            if label_pos.x >= min_x
+                && label_pos.x <= max_x
+                && label_pos.y >= min_y
+                && label_pos.y <= max_y
             {
-                visible_edges.push((edge_entity, label_pos));
+                visible.push((edge_entity, label_pos));
             }
         }
 
-        for ((edge_entity, label_pos), tag_char) in visible_edges
-            .into_iter()
-            .zip("abcdefghijklmnopqrstuvwxyz".chars())
-        {
-            jump_map.char_to_entity.insert(tag_char, edge_entity);
-            let pos = label_pos.extend(1.0);
+        // Sort for consistent, spatially predictable tag assignment.
+        visible.sort_by(|(_, a), (_, b)| sort_by_position(a, b));
+
+        if visible.len() > TAG_CHARS.len() {
+            warn!(
+                "[EASYMOTION] {} visible edges but only {} tags available — zoom in to reach all",
+                visible.len(),
+                TAG_CHARS.len()
+            );
+        }
+
+        for ((edge_entity, label_pos), tag_char) in visible.iter().zip(TAG_CHARS.chars()) {
+            jump_map.char_to_entity.insert(tag_char, *edge_entity);
             commands.spawn((
                 Text2d::new(tag_char.to_uppercase().to_string()),
                 TextFont { font_size: 28.0, ..default() },
                 TextColor(Color::srgb(1.0, 0.85, 0.1)),
-                Transform::from_translation(pos),
+                Transform::from_translation(label_pos.extend(2.0)),
                 JumpTag,
             ));
         }
         info!(
-            "[EASYMOTION] Edge tags: {:?}",
-            jump_map.char_to_entity.keys().copied().collect::<Vec<_>>()
+            "[EASYMOTION] Edge tags assigned: {} of {} visible",
+            visible.len().min(TAG_CHARS.len()),
+            visible.len()
         );
     } else {
-        // Node mode: spatial index for viewport-culled nodes
-        let visible_entities = spatial_index.entities_in_bounds(min_x, max_x, min_y, max_y);
-
-        for (entity, tag_char) in visible_entities
+        // Node mode: collect visible nodes with their world positions, then sort.
+        // Positions are resolved before the zip so no tag chars are wasted on
+        // entities whose transforms happen to be missing.
+        let mut visible: Vec<(Entity, Vec2)> = spatial_index
+            .entities_in_bounds(min_x, max_x, min_y, max_y)
             .into_iter()
-            .zip("abcdefghijklmnopqrstuvwxyz".chars())
-        {
-            let Ok(transform) = transform_query.get(entity) else {
-                continue;
-            };
+            .filter_map(|entity| {
+                let Ok(transform) = transform_query.get(entity) else {
+                    return None;
+                };
+                Some((entity, transform.translation.truncate()))
+            })
+            .collect();
 
-            jump_map.char_to_entity.insert(tag_char, entity);
+        // Consistent top-to-bottom, left-to-right ordering — 'a' is always the
+        // top-left visible node regardless of insertion or HashMap iteration order.
+        visible.sort_by(|(_, a), (_, b)| sort_by_position(a, b));
 
-            let label_pos = transform.translation + Vec3::new(0.0, -65.0, 1.0);
+        if visible.len() > TAG_CHARS.len() {
+            warn!(
+                "[EASYMOTION] {} visible nodes but only {} tags available — zoom in to reach all",
+                visible.len(),
+                TAG_CHARS.len()
+            );
+        }
+
+        for ((entity, pos), tag_char) in visible.iter().zip(TAG_CHARS.chars()) {
+            jump_map.char_to_entity.insert(tag_char, *entity);
+            // Place tag above the node (node half-height = 60, tag at +70) so it
+            // never overlaps the node's own text. z=2 renders above box and text.
+            let label_pos = Vec3::new(pos.x, pos.y + 70.0, 2.0);
             commands.spawn((
                 Text2d::new(tag_char.to_uppercase().to_string()),
                 TextFont { font_size: 28.0, ..default() },
@@ -118,12 +157,9 @@ pub fn jump_tag_setup(
         }
 
         info!(
-            "[EASYMOTION] Node tags: {:?} (viewport-culled)",
-            {
-                let mut keys: Vec<char> = jump_map.char_to_entity.keys().copied().collect();
-                keys.sort_unstable();
-                keys
-            }
+            "[EASYMOTION] Node tags assigned: {} of {} visible",
+            visible.len().min(TAG_CHARS.len()),
+            visible.len()
         );
     }
 }

@@ -8,7 +8,8 @@ mod router;
 use bevy::prelude::*;
 use parsers::walker::DECISION_SEP;
 use std::collections::HashMap;
-use crate::components::{CanvasNode, Edge};
+use std::path::Path;
+use crate::components::{CanvasNode, Edge, FileLabel, SourceLocation};
 use crate::helpers::spawn_node_with_color;
 use crate::layout::ForceLayoutActive;
 use crate::resources::SpatialIndex;
@@ -35,10 +36,21 @@ pub type FlowMap = HashMap<String, Vec<FlowEdge>>;
 /// CallGraph is now an alias for FlowMap for compatibility.
 pub type CallGraph = FlowMap;
 
+/// Maps a namespaced node ID → (absolute file path, 1-indexed line number).
+/// Built by the router from tree-sitter line information; used to power `gd`.
+pub type SourceMap = HashMap<String, (String, u32)>;
+
 /// Trait for language-specific AST parsing. Returns caller -> callees map.
 pub trait LanguageParser: Send + Sync {
     /// Parse source code and extract call graph. Returns empty map on parse failure (no panic).
     fn parse(&self, code: &str) -> CallGraph;
+
+    /// Like `parse` but also returns a bare-name → 1-indexed line-number map for each
+    /// defined function.  Default delegates to `parse` with an empty line map; override
+    /// for accuracy.
+    fn parse_with_lines(&self, code: &str) -> (CallGraph, HashMap<String, u32>) {
+        (self.parse(code), HashMap::new())
+    }
 }
 
 /// Hierarchical flow layout: roots at top, callees below. No force layout — stays spread.
@@ -118,7 +130,7 @@ pub fn handle_crawl_requests(
             continue;
         }
 
-        let graph = CrawlerRouter::crawl(path);
+        let (graph, source_map) = CrawlerRouter::crawl(path);
         if graph.is_empty() {
             warn!("[CRAWL] No functions found in {}", path);
             continue;
@@ -159,15 +171,44 @@ pub fn handle_crawl_requests(
             let y = -(lvl as f32) * FLOW_ROW_HEIGHT;
             for (i, name) in names.iter().enumerate() {
                 let x = (i as f32 - row_len as f32 * 0.5) * FLOW_NODE_SPACING;
-                // Decision nodes have special prefix
-                let is_decision = name.starts_with("_decision_");
+                // Node IDs are namespaced: `relative/path.rs::function_name`
+                // Decision nodes: `relative/path.rs::_decision_N\x1FDISPLAY_TEXT`
+                // Detect by DECISION_SEP presence (only decision nodes contain it).
+                let is_decision = name.contains(DECISION_SEP);
                 let color = if is_decision { DECISION_NODE_COLOR } else { CRAWL_NODE_COLOR };
-                // Decision node keys encode the display label after DECISION_SEP.
-                // e.g. `_decision_1\x1Fif x > 0` → display `if x > 0`.
+                // Strip the namespace prefix (split at first "::"), then strip the
+                // decision-node ID prefix (split at DECISION_SEP) to get display text.
+                let after_ns = name.splitn(2, "::").nth(1).unwrap_or(name.as_str());
                 let display_name =
-                    name.splitn(2, DECISION_SEP).nth(1).unwrap_or(name.as_str());
+                    after_ns.splitn(2, DECISION_SEP).nth(1).unwrap_or(after_ns);
                 let entity = spawn_node_with_color(&mut commands, x, y, display_name, color);
                 name_to_entity.insert(name.clone(), entity);
+
+                // Attach source location (for gd) and file label only on function nodes.
+                if !is_decision {
+                    if let Some((abs_file, line)) = source_map.get(name) {
+                        commands.entity(entity).insert(SourceLocation {
+                            file: abs_file.clone(),
+                            line: *line,
+                        });
+                    }
+                    // Small filename label at the bottom of the node.
+                    let rel_path = name.splitn(2, "::").next().unwrap_or("");
+                    let basename = Path::new(rel_path)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(rel_path);
+                    let basename = basename.to_string();
+                    commands.entity(entity).with_children(|parent| {
+                        parent.spawn((
+                            Text2d::new(basename),
+                            TextFont { font_size: 9.0, ..default() },
+                            TextColor(Color::srgba(0.65, 0.70, 0.75, 0.65)),
+                            Transform::from_xyz(0.0, -48.0, 1.0),
+                            FileLabel,
+                        ));
+                    });
+                }
             }
         }
 

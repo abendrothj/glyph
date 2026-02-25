@@ -2,7 +2,8 @@
 
 use bevy::prelude::*;
 
-use crate::components::MainCamera;
+use crate::components::{MainCamera, Selected};
+use crate::state::InputMode;
 
 /// Scroll-wheel zoom: adjusts the orthographic scale of the main camera.
 /// Pinch/scroll in  → scale decreases (zoom in, things appear larger).
@@ -24,6 +25,28 @@ pub fn camera_zoom_system(
         };
         ortho.scale = (ortho.scale * (1.0 - delta)).clamp(0.1, 10.0);
     }
+}
+
+/// Keyboard zoom: `=` / `+` to zoom in, `-` to zoom out. Each press is one discrete step.
+/// Uses the same scale range as the scroll-wheel zoom (0.1 – 10.0).
+pub fn camera_zoom_keys_system(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut proj_q: Query<&mut Projection, With<MainCamera>>,
+) {
+    let zoom_in = keys.just_pressed(KeyCode::Equal) || keys.just_pressed(KeyCode::NumpadAdd);
+    let zoom_out = keys.just_pressed(KeyCode::Minus) || keys.just_pressed(KeyCode::NumpadSubtract);
+    if !zoom_in && !zoom_out {
+        return;
+    }
+    let Ok(mut proj) = proj_q.single_mut() else {
+        return;
+    };
+    let Projection::Orthographic(ortho) = proj.as_mut() else {
+        return;
+    };
+    // Each step is ×0.8 (in) or ×1.25 (out) — inverses of each other.
+    let factor = if zoom_in { 0.8 } else { 1.25 };
+    ortho.scale = (ortho.scale * factor).clamp(0.1, 10.0);
 }
 
 /// Pan: middle-click drag or Space+left-drag. Translate the camera opposite to mouse movement.
@@ -58,25 +81,34 @@ pub fn camera_pan_system(
 }
 
 /// Arrow keys pan the camera. Hold for continuous movement (scale-aware).
+///
+/// Exception: when in VimNormal with a node selected, arrow keys move the node
+/// instead (handled by `vim_normal_system`). In that case the camera does not pan.
 const PAN_SPEED: f32 = 400.0; // pixels per second at scale 1.0
 
 pub fn camera_pan_keys_system(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
+    current_state: Res<State<InputMode>>,
+    selected_q: Query<(), With<Selected>>,
     mut camera_q: Query<(&mut Transform, &Projection), With<MainCamera>>,
 ) {
+    // In VimNormal with a selected node, arrows are routed to node movement.
+    let arrows_move_node =
+        *current_state.get() == InputMode::VimNormal && !selected_q.is_empty();
+
     let mut dx = 0.0f32;
     let mut dy = 0.0f32;
-    if keys.pressed(KeyCode::ArrowLeft) {
+    if keys.pressed(KeyCode::ArrowLeft) && !arrows_move_node {
         dx += PAN_SPEED;
     }
-    if keys.pressed(KeyCode::ArrowRight) {
+    if keys.pressed(KeyCode::ArrowRight) && !arrows_move_node {
         dx -= PAN_SPEED;
     }
-    if keys.pressed(KeyCode::ArrowUp) {
+    if keys.pressed(KeyCode::ArrowUp) && !arrows_move_node {
         dy -= PAN_SPEED;
     }
-    if keys.pressed(KeyCode::ArrowDown) {
+    if keys.pressed(KeyCode::ArrowDown) && !arrows_move_node {
         dy += PAN_SPEED;
     }
     if dx == 0.0 && dy == 0.0 {

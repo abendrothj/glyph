@@ -200,7 +200,7 @@ pub fn draw_selection_system(
         InputMode::VimInsert => Color::srgb(0.2, 0.85, 0.4),
         InputMode::VimEasymotion => Color::srgb(1.0, 0.6, 0.1),
         InputMode::Standard => Color::srgb(0.85, 0.4, 0.9),
-        InputMode::VimNormal => Color::srgb(0.3, 0.6, 1.0),
+        InputMode::VimNormal | InputMode::VimCommand => Color::srgb(0.3, 0.6, 1.0),
     };
 
     if let Some(edge_entity) = selected_edge.0 {

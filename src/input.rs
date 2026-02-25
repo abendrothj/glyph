@@ -4,10 +4,11 @@ use bevy::input::keyboard::Key;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
-use crate::components::{Edge, NodeColor, Selected, TextData};
+use crate::components::{Edge, NodeColor, Selected, SourceLocation, TextData};
 use crate::easymotion::EasymotionTarget;
-use crate::resources::SelectedEdge;
+use crate::egui_overlay::VimCmdLine;
 use crate::helpers::{delete_node, spawn_node_with_color, spawn_canvas_node};
+use crate::resources::SelectedEdge;
 use crate::state::InputMode;
 
 fn cursor_world_pos(
@@ -66,6 +67,38 @@ const BACKSPACE_REPEAT_INTERVAL: f32 = 0.05;
 const HJKL_ACCEL_THRESHOLD: f32 = 0.25;
 const HJKL_ACCEL_MULT: f32 = 2.5;
 
+/// Open a source file at the given line in the user's preferred editor.
+///
+/// Editor detection priority:
+/// 1. `$EDITOR` / `$VISUAL` env var.
+/// 2. Falls back to `code` (VS Code) if neither is set.
+///
+/// VS Code / Cursor / Windsurf → `--goto file:line`
+/// Zed                         → `file:line` positional arg
+/// Terminal editors (vim/nvim) → new Terminal.app window via osascript (macOS)
+fn open_in_editor(file: &str, line: u32) {
+    let editor = std::env::var("EDITOR")
+        .or_else(|_| std::env::var("VISUAL"))
+        .unwrap_or_else(|_| "code".to_string());
+
+    if editor.contains("code") || editor.contains("cursor") || editor.contains("windsurf") {
+        let _ = std::process::Command::new(&editor)
+            .args(["--goto", &format!("{}:{}", file, line)])
+            .spawn();
+    } else if editor.contains("zed") {
+        let _ = std::process::Command::new(&editor)
+            .arg(format!("{}:{}", file, line))
+            .spawn();
+    } else {
+        // Terminal editor — open a new Terminal.app window on macOS.
+        let safe_file = file.replace('\'', r"'\''");
+        let cmd = format!("{} +{} '{}'", editor, line, safe_file);
+        let _ = std::process::Command::new("osascript")
+            .args(["-e", &format!("tell application \"Terminal\" to do script \"{}\"", cmd)])
+            .spawn();
+    }
+}
+
 /// VimNormal: hjkl movement, i/f/a mode switches, n=create, dd=delete. All home-row.
 pub fn vim_normal_system(
     keys: Res<ButtonInput<KeyCode>>,
@@ -73,18 +106,45 @@ pub fn vim_normal_system(
     mut next_state: ResMut<NextState<InputMode>>,
     mut commands: Commands,
     mut selected_edge: ResMut<SelectedEdge>,
-    mut query: Query<(Entity, &mut Transform, &TextData, &NodeColor), With<Selected>>,
+    mut query: Query<(Entity, &mut Transform, &TextData, &NodeColor, Option<&SourceLocation>), With<Selected>>,
     mut pending_dd: ResMut<PendingDDelete>,
     mut pending_ge: ResMut<PendingGE>,
     mut pending_y: ResMut<PendingY>,
     mut pending_ce: ResMut<PendingCE>,
     mut hjkl_hold: ResMut<HjklHoldTime>,
+    mut cmdline: ResMut<VimCmdLine>,
     edge_query: Query<(Entity, &Edge)>,
     window_q: Query<&Window, With<PrimaryWindow>>,
     camera_q: Query<(&Camera, &GlobalTransform), With<crate::components::MainCamera>>,
 ) {
+    // `:` (Shift+;) — enter command-line mode
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    if shift && keys.just_pressed(KeyCode::Semicolon) {
+        pending_dd.0 = false;
+        pending_ge.0 = false;
+        pending_y.0 = false;
+        pending_ce.0 = false;
+        cmdline.text.clear();
+        next_state.set(InputMode::VimCommand);
+        info!("→ VimCommand");
+        return;
+    }
+
     // dd or Delete/Backspace: delete selected edge (if SelectedEdge) or selected node
+    // gd (g then d): go to definition — open source file in editor at the function's line.
     if keys.just_pressed(KeyCode::KeyD) {
+        if pending_ge.0 {
+            pending_ge.0 = false;
+            if let Ok((_, _, _, _, loc)) = query.single() {
+                if let Some(src) = loc {
+                    open_in_editor(&src.file, src.line);
+                    info!("[GD] → {}:{}", src.file, src.line);
+                } else {
+                    info!("[GD] selected node has no source location (hand-drawn node?)");
+                }
+            }
+            return;
+        }
         if pending_dd.0 {
             pending_dd.0 = false;
             if let Some(edge_entity) = selected_edge.0 {
@@ -191,7 +251,7 @@ pub fn vim_normal_system(
         pending_ce.0 = false;
         if pending_y.0 {
             pending_y.0 = false;
-            if let Ok((entity, transform, text_data, node_color)) = query.single() {
+            if let Ok((entity, transform, text_data, node_color, _)) = query.single() {
                 let pos = transform.translation.truncate() + Vec2::new(50.0, 50.0);
                 let new_entity = spawn_node_with_color(
                     &mut commands,
@@ -256,10 +316,16 @@ pub fn vim_normal_system(
         return;
     };
 
+    // Arrow keys also move the selected node in VimNormal (camera pan is suppressed
+    // for arrows when a node is selected — see camera_pan_keys_system).
     let moving = keys.pressed(KeyCode::KeyH)
         || keys.pressed(KeyCode::KeyL)
         || keys.pressed(KeyCode::KeyK)
-        || keys.pressed(KeyCode::KeyJ);
+        || keys.pressed(KeyCode::KeyJ)
+        || keys.pressed(KeyCode::ArrowLeft)
+        || keys.pressed(KeyCode::ArrowRight)
+        || keys.pressed(KeyCode::ArrowUp)
+        || keys.pressed(KeyCode::ArrowDown);
     if moving {
         pending_dd.0 = false;
         pending_ge.0 = false;
@@ -274,16 +340,16 @@ pub fn vim_normal_system(
     } else {
         HJKL_BASE
     };
-    if keys.pressed(KeyCode::KeyH) {
+    if keys.pressed(KeyCode::KeyH) || keys.pressed(KeyCode::ArrowLeft) {
         transform.translation.x -= speed;
     }
-    if keys.pressed(KeyCode::KeyL) {
+    if keys.pressed(KeyCode::KeyL) || keys.pressed(KeyCode::ArrowRight) {
         transform.translation.x += speed;
     }
-    if keys.pressed(KeyCode::KeyK) {
+    if keys.pressed(KeyCode::KeyK) || keys.pressed(KeyCode::ArrowUp) {
         transform.translation.y += speed;
     }
-    if keys.pressed(KeyCode::KeyJ) {
+    if keys.pressed(KeyCode::KeyJ) || keys.pressed(KeyCode::ArrowDown) {
         transform.translation.y -= speed;
     }
 }

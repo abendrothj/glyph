@@ -9,4 +9,6 @@ pub enum InputMode {
     VimNormal,
     VimInsert,
     VimEasymotion,
+    /// Vim `:` command-line mode. Active while user types a command.
+    VimCommand,
 }

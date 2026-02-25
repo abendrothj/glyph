@@ -8,6 +8,7 @@ use tree_sitter::{Language, Parser};
 use super::super::{CallGraph, LanguageParser};
 use super::builtins;
 use super::walker::{walk_tree, WalkerConfig};
+use std::collections::HashMap;
 
 const TYPESCRIPT_CONFIG: WalkerConfig = WalkerConfig {
     // Named function nodes whose name is an inline field.
@@ -60,6 +61,11 @@ const TYPESCRIPT_CONFIG: WalkerConfig = WalkerConfig {
     match_arm_kind: None,
     match_pattern_kind: None,
 
+    // TypeScript test filtering is file-level (*.test.ts, *.spec.ts).
+    test_mod_kind: None,
+    test_mod_name_field: "",
+    test_mod_names: &[],
+
     builtins: &builtins::TYPESCRIPT_BUILTINS,
 
     // `// @flow` above a function bypasses the builtins filter for that name.
@@ -84,15 +90,19 @@ impl Default for TypeScriptParser {
 
 impl LanguageParser for TypeScriptParser {
     fn parse(&self, code: &str) -> CallGraph {
+        self.parse_with_lines(code).0
+    }
+
+    fn parse_with_lines(&self, code: &str) -> (CallGraph, HashMap<String, u32>) {
         let mut parser = Parser::new();
         if parser.set_language(&self.language).is_err() {
-            return CallGraph::new();
+            return (CallGraph::new(), HashMap::new());
         }
         let Some(tree) = parser.parse(code, None) else {
-            return CallGraph::new();
+            return (CallGraph::new(), HashMap::new());
         };
         if tree.root_node().has_error() {
-            return CallGraph::new();
+            return (CallGraph::new(), HashMap::new());
         }
         walk_tree(&TYPESCRIPT_CONFIG, tree.root_node(), code)
     }

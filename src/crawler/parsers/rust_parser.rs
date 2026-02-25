@@ -5,6 +5,7 @@ use tree_sitter::{Language, Parser};
 use super::super::{CallGraph, LanguageParser};
 use super::builtins;
 use super::walker::{walk_tree, WalkerConfig};
+use std::collections::HashMap;
 
 const RUST_CONFIG: WalkerConfig = WalkerConfig {
     // fn foo() / pub fn foo() / async fn foo()
@@ -48,6 +49,11 @@ const RUST_CONFIG: WalkerConfig = WalkerConfig {
     match_arm_kind: Some("match_arm"),
     match_pattern_kind: Some("match_pattern"),
 
+    // `#[cfg(test)] mod tests { ... }` — skip the whole subtree.
+    test_mod_kind: Some("mod_item"),
+    test_mod_name_field: "name",
+    test_mod_names: &["tests", "test"],
+
     builtins: &builtins::RUST_BUILTINS,
 
     // `// @flow` above a fn bypasses the builtins filter for that name.
@@ -72,15 +78,19 @@ impl Default for RustParser {
 
 impl LanguageParser for RustParser {
     fn parse(&self, code: &str) -> CallGraph {
+        self.parse_with_lines(code).0
+    }
+
+    fn parse_with_lines(&self, code: &str) -> (CallGraph, HashMap<String, u32>) {
         let mut parser = Parser::new();
         if parser.set_language(&self.language).is_err() {
-            return CallGraph::new();
+            return (CallGraph::new(), HashMap::new());
         }
         let Some(tree) = parser.parse(code, None) else {
-            return CallGraph::new();
+            return (CallGraph::new(), HashMap::new());
         };
         if tree.root_node().has_error() {
-            return CallGraph::new();
+            return (CallGraph::new(), HashMap::new());
         }
         walk_tree(&RUST_CONFIG, tree.root_node(), code)
     }

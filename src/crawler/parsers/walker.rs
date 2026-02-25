@@ -2,7 +2,7 @@
 //! control-flow decision nodes (if/for/while/match). Language parsers configure it via
 //! WalkerConfig and call `walk_tree`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 use crate::crawler::{CallGraph, FlowEdge};
@@ -78,6 +78,17 @@ pub struct WalkerConfig {
     /// The node kind whose text is used as the arm label.
     pub match_pattern_kind: Option<&'static str>,
 
+    // --- Test scope filtering -----------------------------------------------
+    /// Optional: AST node kind that represents a module/namespace container
+    /// (e.g. `"mod_item"` for Rust).  When a node of this kind has a name that
+    /// matches any entry in `test_mod_names`, its entire subtree is skipped so
+    /// that test-only functions don't appear in the call graph.
+    pub test_mod_kind: Option<&'static str>,
+    /// Field on the test-module node that holds its name identifier.
+    pub test_mod_name_field: &'static str,
+    /// Module names to treat as test scopes (e.g. `&["tests", "test"]`).
+    pub test_mod_names: &'static [&'static str],
+
     // --- Builtins -----------------------------------------------------------
     pub builtins: &'static phf::Set<&'static str>,
 
@@ -121,6 +132,21 @@ fn collect_force_includes(config: &WalkerConfig, root: Node, code: &str) -> Hash
         includes: &mut HashSet<String>,
     ) {
         let kind = node.kind();
+
+        // Skip test module subtrees.
+        if let Some(tmk) = config.test_mod_kind {
+            if kind == tmk {
+                let name = node
+                    .child_by_field_name(config.test_mod_name_field)
+                    .and_then(|n| code.get(n.start_byte()..n.end_byte()))
+                    .map(str::trim)
+                    .unwrap_or("");
+                if config.test_mod_names.contains(&name) {
+                    return;
+                }
+            }
+        }
+
         let is_fn = config.function_kinds.contains(&kind)
             || config.anon_function_kinds.contains(&kind);
 
@@ -161,9 +187,12 @@ fn collect_force_includes(config: &WalkerConfig, root: Node, code: &str) -> Hash
 
 // ── Walker ────────────────────────────────────────────────────────────────────
 
-pub fn walk_tree(config: &WalkerConfig, root: Node, code: &str) -> CallGraph {
+/// Walk the AST and return both the call graph and a map of bare function
+/// name → 1-indexed start line (used by the router to build `SourceMap`).
+pub fn walk_tree(config: &WalkerConfig, root: Node, code: &str) -> (CallGraph, HashMap<String, u32>) {
     let force_include = collect_force_includes(config, root, code);
     let mut flow_map = CallGraph::new();
+    let mut line_map: HashMap<String, u32> = HashMap::new();
     let mut counter: u32 = 0;
 
     #[derive(Clone, Debug)]
@@ -188,8 +217,23 @@ pub fn walk_tree(config: &WalkerConfig, root: Node, code: &str) -> CallGraph {
         map: &mut CallGraph,
         ctr: &mut u32,
         force_include: &HashSet<String>,
+        lines: &mut HashMap<String, u32>,
     ) {
         let kind = node.kind();
+
+        // ── Test module skip ────────────────────────────────────────────────
+        // e.g. `#[cfg(test)] mod tests { ... }` in Rust — skip the whole subtree.
+        if let Some(tmk) = cfg.test_mod_kind {
+            if kind == tmk {
+                let name = node
+                    .child_by_field_name(cfg.test_mod_name_field)
+                    .map(|n| get_text(n, code))
+                    .unwrap_or_default();
+                if cfg.test_mod_names.contains(&name.as_str()) {
+                    return;
+                }
+            }
+        }
 
         // ── Named function ──────────────────────────────────────────────────
         if cfg.function_kinds.contains(&kind) {
@@ -197,9 +241,10 @@ pub fn walk_tree(config: &WalkerConfig, root: Node, code: &str) -> CallGraph {
                 .child_by_field_name(cfg.function_name_field)
                 .map(|n| get_text(n, code))
                 .unwrap_or_else(|| "<anon_fn>".to_string());
+            lines.insert(name.clone(), node.start_position().row as u32 + 1);
             stack.push(Scope { id: name.clone(), label: None });
             for i in 0..node.child_count() {
-                walk(node.child(i).unwrap(), code, cfg, stack, map, ctr, force_include);
+                walk(node.child(i).unwrap(), code, cfg, stack, map, ctr, force_include, lines);
             }
             map.entry(name).or_default();
             stack.pop();
@@ -219,9 +264,10 @@ pub fn walk_tree(config: &WalkerConfig, root: Node, code: &str) -> CallGraph {
                     }
                 })
                 .unwrap_or_else(|| "<anon_fn>".to_string());
+            lines.insert(name.clone(), node.start_position().row as u32 + 1);
             stack.push(Scope { id: name.clone(), label: None });
             for i in 0..node.child_count() {
-                walk(node.child(i).unwrap(), code, cfg, stack, map, ctr, force_include);
+                walk(node.child(i).unwrap(), code, cfg, stack, map, ctr, force_include, lines);
             }
             map.entry(name).or_default();
             stack.pop();
@@ -249,14 +295,14 @@ pub fn walk_tree(config: &WalkerConfig, root: Node, code: &str) -> CallGraph {
             // Condition is evaluated in the parent scope.
             if let Some(f) = cfg.if_condition_field {
                 if let Some(cond) = node.child_by_field_name(f) {
-                    walk(cond, code, cfg, stack, map, ctr, force_include);
+                    walk(cond, code, cfg, stack, map, ctr, force_include, lines);
                 }
             }
             // True branch.
             if let Some(f) = cfg.if_then_field {
                 if let Some(then_node) = node.child_by_field_name(f) {
                     stack.push(Scope { id: decision_id.clone(), label: Some("True".to_string()) });
-                    walk(then_node, code, cfg, stack, map, ctr, force_include);
+                    walk(then_node, code, cfg, stack, map, ctr, force_include, lines);
                     stack.pop();
                 }
             }
@@ -267,7 +313,7 @@ pub fn walk_tree(config: &WalkerConfig, root: Node, code: &str) -> CallGraph {
                         id: decision_id.clone(),
                         label: Some("False".to_string()),
                     });
-                    walk(else_node, code, cfg, stack, map, ctr, force_include);
+                    walk(else_node, code, cfg, stack, map, ctr, force_include, lines);
                     stack.pop();
                 }
             }
@@ -280,7 +326,7 @@ pub fn walk_tree(config: &WalkerConfig, root: Node, code: &str) -> CallGraph {
                         elif_n += 1;
                         if let Some(f) = cfg.elif_condition_field {
                             if let Some(cond) = child.child_by_field_name(f) {
-                                walk(cond, code, cfg, stack, map, ctr, force_include);
+                                walk(cond, code, cfg, stack, map, ctr, force_include, lines);
                             }
                         }
                         let label = if elif_n == 1 {
@@ -291,7 +337,7 @@ pub fn walk_tree(config: &WalkerConfig, root: Node, code: &str) -> CallGraph {
                         if let Some(f) = cfg.elif_body_field {
                             if let Some(body) = child.child_by_field_name(f) {
                                 stack.push(Scope { id: decision_id.clone(), label: Some(label) });
-                                walk(body, code, cfg, stack, map, ctr, force_include);
+                                walk(body, code, cfg, stack, map, ctr, force_include, lines);
                                 stack.pop();
                             }
                         }
@@ -309,7 +355,7 @@ pub fn walk_tree(config: &WalkerConfig, root: Node, code: &str) -> CallGraph {
                                     id: decision_id.clone(),
                                     label: Some("False".to_string()),
                                 });
-                                walk(body, code, cfg, stack, map, ctr, force_include);
+                                walk(body, code, cfg, stack, map, ctr, force_include, lines);
                                 stack.pop();
                             }
                         }
@@ -350,7 +396,7 @@ pub fn walk_tree(config: &WalkerConfig, root: Node, code: &str) -> CallGraph {
             if let Some(f) = cfg.loop_body_field {
                 if let Some(body) = node.child_by_field_name(f) {
                     stack.push(Scope { id: decision_id.clone(), label: Some("Loop".to_string()) });
-                    walk(body, code, cfg, stack, map, ctr, force_include);
+                    walk(body, code, cfg, stack, map, ctr, force_include, lines);
                     stack.pop();
                 }
             }
@@ -382,7 +428,7 @@ pub fn walk_tree(config: &WalkerConfig, root: Node, code: &str) -> CallGraph {
             // Matched value is walked in the parent scope.
             if let Some(f) = cfg.match_value_field {
                 if let Some(val) = node.child_by_field_name(f) {
-                    walk(val, code, cfg, stack, map, ctr, force_include);
+                    walk(val, code, cfg, stack, map, ctr, force_include, lines);
                 }
             }
             // Arms inside the match body node.
@@ -414,7 +460,7 @@ pub fn walk_tree(config: &WalkerConfig, root: Node, code: &str) -> CallGraph {
                                 .match_pattern_kind
                                 .map_or(false, |pk| sub.kind() == pk);
                             if !is_pattern {
-                                walk(sub, code, cfg, stack, map, ctr, force_include);
+                                walk(sub, code, cfg, stack, map, ctr, force_include, lines);
                             }
                         }
                         stack.pop();
@@ -458,17 +504,17 @@ pub fn walk_tree(config: &WalkerConfig, root: Node, code: &str) -> CallGraph {
             }
             // Recurse to capture calls in arguments.
             for i in 0..node.child_count() {
-                walk(node.child(i).unwrap(), code, cfg, stack, map, ctr, force_include);
+                walk(node.child(i).unwrap(), code, cfg, stack, map, ctr, force_include, lines);
             }
             return;
         }
 
         // ── default: walk children ──────────────────────────────────────────
         for i in 0..node.child_count() {
-            walk(node.child(i).unwrap(), code, cfg, stack, map, ctr, force_include);
+            walk(node.child(i).unwrap(), code, cfg, stack, map, ctr, force_include, lines);
         }
     }
 
-    walk(root, code, config, &mut scope_stack, &mut flow_map, &mut counter, &force_include);
-    flow_map
+    walk(root, code, config, &mut scope_stack, &mut flow_map, &mut counter, &force_include, &mut line_map);
+    (flow_map, line_map)
 }

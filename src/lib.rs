@@ -18,12 +18,13 @@ pub mod state;
 use bevy::prelude::*;
 use bevy_egui::{input::egui_wants_any_keyboard_input, EguiPlugin};
 
-use camera::{camera_pan_keys_system, camera_pan_system, camera_zoom_system};
+use camera::{camera_pan_keys_system, camera_pan_system, camera_zoom_keys_system, camera_zoom_system};
 use components::MainCamera;
 use easymotion::{jump_tag_cleanup, jump_tag_setup, vim_easymotion_system, EasymotionTarget};
 use egui_overlay::{
-    process_pending_file_dialog_system, toggle_command_palette_system, ui_command_palette_system,
-    ui_top_bar_system, CommandPaletteState,
+    process_pending_file_dialog_system, toggle_command_palette_system, ui_bottom_bar_system,
+    ui_command_palette_system, ui_top_bar_system, vim_cmdline_system, CommandPaletteState,
+    VimCmdLine,
 };
 use input::{standard_mode_system, vim_insert_system, vim_normal_system, PendingDDelete};
 use io::{load_canvas_system, load_recent, process_pending_load_system, save_canvas_system, workflows_dir, CurrentFile, PendingLoad, RecentFiles};
@@ -39,10 +40,13 @@ use selection::{
 use spatial::{spatial_index_cleanup_system, update_spatial_index_system};
 use state::InputMode;
 
-/// Run Vim/input systems only when command palette is closed and egui is not
-/// consuming keyboard input (e.g. typing in search bar, File menu open).
-fn vim_input_available(palette: Res<CommandPaletteState>) -> bool {
-    !palette.is_open
+/// Run Vim/input systems only when command palette is closed, not in command-line
+/// mode, and egui is not consuming keyboard input (e.g. typing in search bar).
+fn vim_input_available(
+    palette: Res<CommandPaletteState>,
+    state: Res<State<InputMode>>,
+) -> bool {
+    !palette.is_open && *state.get() != InputMode::VimCommand
 }
 
 /// Build and run the Glyph app.
@@ -55,6 +59,7 @@ pub fn run() {
         .init_resource::<SpatialIndex>()
         .init_resource::<CurrentFile>()
         .init_resource::<CommandPaletteState>()
+        .init_resource::<VimCmdLine>()
         .init_resource::<PendingDDelete>()
         .init_resource::<input::PendingGE>()
         .init_resource::<input::PendingY>()
@@ -90,6 +95,9 @@ pub fn run() {
             (
                 toggle_command_palette_system,
                 camera_zoom_system,
+                camera_zoom_keys_system
+                    .run_if(vim_input_available)
+                    .run_if(not(egui_wants_any_keyboard_input)),
                 camera_pan_system,
                 camera_pan_keys_system.run_if(vim_input_available).run_if(not(egui_wants_any_keyboard_input)),
                 save_canvas_system
@@ -122,6 +130,8 @@ pub fn run() {
                     .run_if(in_state(InputMode::VimEasymotion))
                     .run_if(vim_input_available)
                     .run_if(not(egui_wants_any_keyboard_input)),
+                vim_cmdline_system
+                    .run_if(in_state(InputMode::VimCommand)),
             ),
         )
         .add_systems(
@@ -144,6 +154,7 @@ pub fn run() {
         )
         .add_systems(bevy_egui::EguiPrimaryContextPass, ui_top_bar_system)
         .add_systems(bevy_egui::EguiPrimaryContextPass, ui_command_palette_system)
+        .add_systems(bevy_egui::EguiPrimaryContextPass, ui_bottom_bar_system)
         .add_systems(Update, process_pending_file_dialog_system)
         .run();
 }
