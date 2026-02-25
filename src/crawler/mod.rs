@@ -16,10 +16,95 @@ use crate::resources::SpatialIndex;
 
 pub use router::CrawlerRouter;
 
+// ── File-system watcher ────────────────────────────────────────────────────────
+
+/// Holds the active `notify` watcher and its event channel.
+/// Wrapped in `Mutex` so the resource satisfies Bevy's `Send + Sync` requirement;
+/// systems always hold `ResMut<WatchState>` (exclusive access) so lock contention
+/// is impossible in practice.
+#[derive(Resource)]
+pub struct WatchState {
+    /// Keeps the watcher alive (dropping it stops watching).
+    _watcher: std::sync::Mutex<Option<notify::RecommendedWatcher>>,
+    /// Receives raw file-system events.
+    rx: std::sync::Mutex<Option<std::sync::mpsc::Receiver<notify::Result<notify::Event>>>>,
+    /// Path currently being watched (passed to re-crawl).
+    pub watch_path: Option<String>,
+    /// Preserve the `no_flow` setting used for the last crawl.
+    pub no_flow: bool,
+    /// Time of the most recent relevant file-change event (for debouncing).
+    last_event: Option<std::time::Instant>,
+}
+
+impl Default for WatchState {
+    fn default() -> Self {
+        Self {
+            _watcher: std::sync::Mutex::new(None),
+            rx: std::sync::Mutex::new(None),
+            watch_path: None,
+            no_flow: false,
+            last_event: None,
+        }
+    }
+}
+
+/// Checks the watcher channel for source-file changes and fires a re-crawl
+/// after a 500 ms debounce window.
+pub fn watch_trigger_system(
+    mut watch: ResMut<WatchState>,
+    mut crawl_events: MessageWriter<CrawlRequest>,
+) {
+    // Drain pending events.
+    let has_event = if let Ok(rx_guard) = watch.rx.try_lock() {
+        if let Some(rx) = rx_guard.as_ref() {
+            let mut found = false;
+            loop {
+                match rx.try_recv() {
+                    Ok(Ok(ev)) => {
+                        let is_source = ev.paths.iter().any(|p| {
+                            p.extension()
+                                .and_then(|e| e.to_str())
+                                .map_or(false, |e| matches!(e, "rs" | "py" | "ts" | "tsx"))
+                        });
+                        if is_source {
+                            found = true;
+                        }
+                    }
+                    Ok(Err(_)) | Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                }
+            }
+            found
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if has_event {
+        watch.last_event = Some(std::time::Instant::now());
+    }
+
+    // Fire re-crawl once the debounce window (500 ms) has elapsed.
+    if let Some(last) = watch.last_event {
+        if last.elapsed() >= std::time::Duration::from_millis(500) {
+            watch.last_event = None;
+            if let Some(path) = watch.watch_path.clone() {
+                info!("[WATCH] Re-crawling {} (file changed)", path);
+                crawl_events.write(CrawlRequest { path, no_flow: watch.no_flow });
+            }
+        }
+    }
+}
+
 /// Message sent when user requests a crawl (e.g. from Command Palette).
 #[derive(Message)]
 pub struct CrawlRequest {
     pub path: String,
+    /// When `true`, decision nodes (if/for/while/match) are suppressed and the
+    /// resulting graph contains only function nodes. Pass `--no-flow` to `:crawl`.
+    pub no_flow: bool,
 }
 
 
@@ -48,7 +133,10 @@ pub trait LanguageParser: Send + Sync {
     /// Like `parse` but also returns a bare-name → 1-indexed line-number map for each
     /// defined function.  Default delegates to `parse` with an empty line map; override
     /// for accuracy.
-    fn parse_with_lines(&self, code: &str) -> (CallGraph, HashMap<String, u32>) {
+    ///
+    /// `no_flow` suppresses control-flow decision nodes; see [`walk_tree`].
+    fn parse_with_lines(&self, code: &str, no_flow: bool) -> (CallGraph, HashMap<String, u32>) {
+        let _ = no_flow;
         (self.parse(code), HashMap::new())
     }
 }
@@ -121,6 +209,7 @@ pub fn handle_crawl_requests(
     mut spatial_index: ResMut<SpatialIndex>,
     mut force_layout: ResMut<ForceLayoutActive>,
     mut crawl_events: MessageReader<CrawlRequest>,
+    mut watch_state: ResMut<WatchState>,
     node_query: Query<Entity, With<CanvasNode>>,
     edge_entity_query: Query<Entity, With<Edge>>,
 ) {
@@ -130,7 +219,7 @@ pub fn handle_crawl_requests(
             continue;
         }
 
-        let (graph, source_map) = CrawlerRouter::crawl(path);
+        let (graph, source_map) = CrawlerRouter::crawl(path, ev.no_flow);
         if graph.is_empty() {
             warn!("[CRAWL] No functions found in {}", path);
             continue;
@@ -241,5 +330,33 @@ pub fn handle_crawl_requests(
             edge_count,
             path
         );
+
+        // ── Start/restart the file-system watcher ────────────────────────────
+        watch_state.no_flow = ev.no_flow;
+        watch_state.watch_path = Some(path.to_string());
+        watch_state.last_event = None;
+
+        use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+        let abs = std::path::Path::new(path)
+            .canonicalize()
+            .unwrap_or_else(|_| std::path::PathBuf::from(path));
+        let (tx, rx) = std::sync::mpsc::channel();
+        match RecommendedWatcher::new(
+            move |res| { let _ = tx.send(res); },
+            notify::Config::default(),
+        ) {
+            Ok(mut watcher) => {
+                if watcher.watch(&abs, RecursiveMode::Recursive).is_ok() {
+                    if let (Ok(mut w), Ok(mut r)) =
+                        (watch_state._watcher.lock(), watch_state.rx.lock())
+                    {
+                        *w = Some(watcher);
+                        *r = Some(rx);
+                    }
+                    info!("[WATCH] Watching {} for changes", abs.display());
+                }
+            }
+            Err(e) => warn!("[WATCH] Could not create watcher: {}", e),
+        }
     }
 }

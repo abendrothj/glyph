@@ -12,6 +12,7 @@ use crate::io::{
     add_to_recent, camera_prefs_from_parts, save_to_path, workflows_dir, CurrentFile,
     FileDialogResult, PendingFileDialog, PendingLoad, RecentFiles, WORKSPACE_PATH,
 };
+use crate::components::SourceLocation;
 use crate::resources::SpatialIndex;
 use crate::state::InputMode;
 
@@ -197,7 +198,7 @@ pub fn ui_top_bar_system(
                         InputMode::VimEasymotion =>
                             "Type letter to jump   Esc: cancel",
                         InputMode::VimCommand =>
-                            ":w · :w <path> · :e <path> · :crawl <path> · :q   Esc/Ctrl+[: cancel   Enter: execute",
+                            ":w · :w <path> · :e <path> · :crawl <path> [--no-flow] · :q   Esc/Ctrl+[: cancel   Enter: execute",
                     }
                 };
                 ui.label(egui::RichText::new(hint).color(egui::Color32::GRAY));
@@ -328,9 +329,14 @@ pub fn ui_command_palette_system(
             // ── Typed commands (Enter executes immediately) ──────────────────
             if enter_pressed && search_has_focus {
                 if q_raw.starts_with("crawl ") {
-                    let path = q_raw["crawl ".len()..].trim().to_string();
+                    let arg = q_raw["crawl ".len()..].trim();
+                    let (path, no_flow) = if let Some(p) = arg.strip_suffix(" --no-flow") {
+                        (p.trim().to_string(), true)
+                    } else {
+                        (arg.to_string(), false)
+                    };
                     if !path.is_empty() {
-                        crawl_events.write(crate::crawler::CrawlRequest { path });
+                        crawl_events.write(crate::crawler::CrawlRequest { path, no_flow });
                         palette.search_query.clear();
                         palette.is_open = false;
                     }
@@ -580,8 +586,18 @@ fn execute_vim_command(
             if arg.is_empty() {
                 warn!("[CMD] :crawl requires a path");
             } else {
-                crawl_events.write(crate::crawler::CrawlRequest { path: arg.to_string() });
-                info!("[CMD] :crawl {}", arg);
+                let (path, no_flow) = if let Some(p) = arg.strip_suffix(" --no-flow") {
+                    (p.trim(), true)
+                } else if let Some(p) = arg.strip_prefix("--no-flow ") {
+                    (p.trim(), true)
+                } else {
+                    (arg, false)
+                };
+                crawl_events.write(crate::crawler::CrawlRequest {
+                    path: path.to_string(),
+                    no_flow,
+                });
+                info!("[CMD] :crawl {} (no_flow={})", path, no_flow);
             }
         }
         "q" | "quit" => {
@@ -655,6 +671,56 @@ pub fn vim_cmdline_system(
             _ => {}
         }
     }
+}
+
+/// Floating legend panel: lists each source file with its halo color swatch.
+/// Only shown when crawled nodes (nodes with SourceLocation) are present.
+pub fn ui_legend_system(
+    mut contexts: EguiContexts,
+    node_query: Query<&SourceLocation, With<CanvasNode>>,
+) {
+    // Collect unique absolute paths, sorted for stable ordering.
+    let mut files: Vec<String> = node_query
+        .iter()
+        .map(|loc| loc.file.clone())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    if files.is_empty() {
+        return;
+    }
+    files.sort();
+
+    let Ok(ctx) = contexts.ctx_mut() else { return };
+
+    egui::Window::new("Modules")
+        .resizable(false)
+        .collapsible(true)
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 40.0))
+        .show(ctx, |ui| {
+            for file in &files {
+                let (r, g, b) = crate::cluster::palette_rgb(file);
+                let swatch = egui::Color32::from_rgb(
+                    (r * 255.0) as u8,
+                    (g * 255.0) as u8,
+                    (b * 255.0) as u8,
+                );
+                // Show only the filename, not the full path.
+                let basename = std::path::Path::new(file)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(file.as_str());
+                ui.horizontal(|ui| {
+                    // Colored square swatch
+                    let (rect, _) = ui.allocate_exact_size(
+                        egui::vec2(14.0, 14.0),
+                        egui::Sense::hover(),
+                    );
+                    ui.painter().rect_filled(rect, 3.0, swatch);
+                    ui.label(egui::RichText::new(basename).small());
+                });
+            }
+        });
 }
 
 /// Bottom bar: mode indicator and vim command line.

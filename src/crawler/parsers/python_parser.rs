@@ -83,10 +83,10 @@ impl Default for PythonParser {
 
 impl LanguageParser for PythonParser {
     fn parse(&self, code: &str) -> CallGraph {
-        self.parse_with_lines(code).0
+        self.parse_with_lines(code, false).0
     }
 
-    fn parse_with_lines(&self, code: &str) -> (CallGraph, HashMap<String, u32>) {
+    fn parse_with_lines(&self, code: &str, no_flow: bool) -> (CallGraph, HashMap<String, u32>) {
         let mut parser = Parser::new();
         if parser.set_language(&self.language).is_err() {
             return (CallGraph::new(), HashMap::new());
@@ -97,7 +97,7 @@ impl LanguageParser for PythonParser {
         if tree.root_node().has_error() {
             return (CallGraph::new(), HashMap::new());
         }
-        walk_tree(&PYTHON_CONFIG, tree.root_node(), code)
+        walk_tree(&PYTHON_CONFIG, tree.root_node(), code, no_flow)
     }
 }
 

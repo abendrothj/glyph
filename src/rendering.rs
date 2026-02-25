@@ -48,7 +48,8 @@ pub fn draw_edges_system(
         let mid = (p0 + p2) * 0.5;
         let dir = (p2 - p0).normalize_or_zero();
         let dist = p0.distance(p2);
-        let curve_mag = (dist * 0.12).min(50.0).max(15.0);
+        // Larger offset so curves are clearly visible on the canvas.
+        let curve_mag = (dist * 0.35).clamp(35.0, 180.0);
         let perp = Vec2::new(-dir.y, dir.x);
         for (idx, _) in entities.iter().enumerate() {
             let sign = if idx % 2 == 0 { 1.0 } else { -1.0 };
@@ -80,7 +81,7 @@ pub fn edge_label_world_pos(
     let mid = (p0 + p2) * 0.5;
     let dir = (p2 - p0).normalize_or_zero();
     let dist = p0.distance(p2);
-    let curve_mag = (dist * 0.12).min(50.0).max(15.0);
+    let curve_mag = (dist * 0.35).clamp(35.0, 180.0);
     let perp = Vec2::new(-dir.y, dir.x);
     let sign = if idx % 2 == 0 { 1.0 } else { -1.0 };
     let p1 = mid + perp * curve_mag * sign;

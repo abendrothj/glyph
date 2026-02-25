@@ -25,7 +25,7 @@ impl CrawlerRouter {
     /// defined name and its declaring file(s), then rewrite edge targets to the
     /// namespaced form.  When a name is defined in more than one file an edge is
     /// emitted to each definition so ambiguity is visible in the graph.
-    pub fn crawl(root: &str) -> (CallGraph, SourceMap) {
+    pub fn crawl(root: &str, no_flow: bool) -> (CallGraph, SourceMap) {
         let root_path = Path::new(root);
         if !root_path.exists() || !root_path.is_dir() {
             return (CallGraph::new(), SourceMap::new());
@@ -82,7 +82,7 @@ impl CrawlerRouter {
                     }
 
                     let abs = path.to_string_lossy().into_owned();
-                    let (file_graph, line_numbers) = p.parse_with_lines(&content);
+                    let (file_graph, line_numbers) = p.parse_with_lines(&content, no_flow);
                     if !file_graph.is_empty() {
                         per_file.push((rel, abs, file_graph, line_numbers));
                     }
@@ -195,13 +195,13 @@ mod tests {
 
     #[test]
     fn crawl_nonexistent_returns_empty() {
-        let (g, _) = CrawlerRouter::crawl("/nonexistent/path/12345");
+        let (g, _) = CrawlerRouter::crawl("/nonexistent/path/12345", false);
         assert!(g.is_empty());
     }
 
     #[test]
     fn crawl_empty_string_returns_empty() {
-        let (g, _) = CrawlerRouter::crawl("");
+        let (g, _) = CrawlerRouter::crawl("", false);
         assert!(g.is_empty());
     }
 
@@ -220,7 +220,7 @@ pub fn public_api() { helper(); }
         .unwrap();
         fs::write(dir_path.join("other.py"), "def foo(): pass").unwrap();
 
-        let (g, src) = CrawlerRouter::crawl(dir_path.to_str().unwrap());
+        let (g, src) = CrawlerRouter::crawl(dir_path.to_str().unwrap(), false);
         // Keys are now namespaced as `relative_path::function_name`.
         assert!(g.contains_key("mod.rs::public_api"), "expected mod.rs::public_api in {:?}", g.keys().collect::<Vec<_>>());
         assert!(g.contains_key("mod.rs::helper"));
@@ -248,7 +248,7 @@ def foo():
         )
         .unwrap();
 
-        let (g, _src) = CrawlerRouter::crawl(dir_path.to_str().unwrap());
+        let (g, _src) = CrawlerRouter::crawl(dir_path.to_str().unwrap(), false);
         assert!(g.contains_key("main.py::foo"), "expected main.py::foo in {:?}", g.keys().collect::<Vec<_>>());
         assert!(g.contains_key("main.py::bar"));
         let foo_edges = g.get("main.py::foo").unwrap();

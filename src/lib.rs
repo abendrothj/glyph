@@ -1,6 +1,7 @@
 //! Glyph — Vim-style 2D whiteboard. Library for testing and reuse.
 
 pub mod camera;
+pub mod cluster;
 pub mod components;
 pub mod crawler;
 pub mod easymotion;
@@ -23,8 +24,8 @@ use components::MainCamera;
 use easymotion::{jump_tag_cleanup, jump_tag_setup, vim_easymotion_system, EasymotionTarget};
 use egui_overlay::{
     process_pending_file_dialog_system, toggle_command_palette_system, ui_bottom_bar_system,
-    ui_command_palette_system, ui_top_bar_system, vim_cmdline_system, CommandPaletteState,
-    VimCmdLine,
+    ui_command_palette_system, ui_legend_system, ui_top_bar_system, vim_cmdline_system,
+    CommandPaletteState, VimCmdLine,
 };
 use input::{standard_mode_system, vim_insert_system, vim_normal_system, PendingDDelete};
 use io::{load_canvas_system, load_recent, process_pending_load_system, save_canvas_system, workflows_dir, CurrentFile, PendingLoad, RecentFiles};
@@ -37,6 +38,7 @@ use selection::{
     edge_draw_drop_system, edge_draw_preview_system, mouse_selection_system, node_drag_system,
     node_drop_system, DrawingEdge, LastEmptyClick,
 };
+use cluster::cluster_blobs_system;
 use spatial::{spatial_index_cleanup_system, update_spatial_index_system};
 use state::InputMode;
 
@@ -75,6 +77,7 @@ pub fn run() {
         .init_resource::<PendingLoad>()
         .init_resource::<ForceLayoutActive>()
         .init_resource::<RecentFiles>()
+        .init_resource::<crawler::WatchState>()
         .add_systems(Startup, |mut recent: ResMut<RecentFiles>| {
             let _ = workflows_dir(); // ensure workflows folder exists
             recent.0 = load_recent();
@@ -108,6 +111,7 @@ pub fn run() {
                     .run_if(not(egui_wants_any_keyboard_input)),
                 process_pending_load_system,
                 crawler::handle_crawl_requests,
+                crawler::watch_trigger_system,
                 mouse_selection_system,
                 node_drag_system
                     .run_if(in_state(InputMode::Standard))
@@ -138,6 +142,7 @@ pub fn run() {
             Update,
             (
                 force_directed_layout_system,
+                cluster_blobs_system,
                 draw_edges_system,
                 edge_draw_preview_system
                     .run_if(in_state(InputMode::Standard))
@@ -155,6 +160,7 @@ pub fn run() {
         .add_systems(bevy_egui::EguiPrimaryContextPass, ui_top_bar_system)
         .add_systems(bevy_egui::EguiPrimaryContextPass, ui_command_palette_system)
         .add_systems(bevy_egui::EguiPrimaryContextPass, ui_bottom_bar_system)
+        .add_systems(bevy_egui::EguiPrimaryContextPass, ui_legend_system)
         .add_systems(Update, process_pending_file_dialog_system)
         .run();
 }
