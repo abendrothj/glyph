@@ -6,10 +6,10 @@ pub mod parsers;
 mod router;
 pub mod tracing;
 
-use crate::components::{CanvasNode, Edge, FileLabel, SourceLocation};
-use crate::helpers::spawn_node_with_color;
-use crate::layout::ForceLayoutActive;
-use crate::resources::SpatialIndex;
+use crate::core::components::{CanvasNode, Edge, FileLabel, SourceLocation};
+use crate::core::helpers::spawn_node_with_color;
+use crate::render::layout::ForceLayoutActive;
+use crate::core::resources::SpatialIndex;
 use bevy::prelude::*;
 use parsers::walker::DECISION_SEP;
 use std::collections::HashMap;
@@ -230,7 +230,7 @@ pub fn handle_crawl_requests(
     mut force_layout: ResMut<ForceLayoutActive>,
     mut crawl_events: MessageReader<CrawlRequest>,
     mut watch_state: ResMut<WatchState>,
-    mut status: ResMut<crate::resources::StatusMessage>,
+    mut status: ResMut<crate::core::resources::StatusMessage>,
     node_query: Query<Entity, With<CanvasNode>>,
     edge_entity_query: Query<Entity, With<Edge>>,
 ) {

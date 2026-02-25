@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::components::{CanvasNode, Edge, MainCamera, NodeColor, TextData};
-use crate::helpers::spawn_node_with_color;
+use crate::core::components::{CanvasNode, Edge, MainCamera, NodeColor, TextData};
+use crate::core::helpers::spawn_node_with_color;
 
 /// Default path for keyboard shortcut save/load when no file is open.
 pub const WORKSPACE_PATH: &str = "workspace.glyph";
@@ -72,7 +72,7 @@ pub struct SerializedColor {
 }
 
 impl SerializedColor {
-    fn from_bevy(color: &Color) -> Self {
+    pub fn from_bevy(color: &Color) -> Self {
         let srgba = color.to_srgba();
         Self {
             r: srgba.red,
@@ -80,7 +80,7 @@ impl SerializedColor {
             b: srgba.blue,
         }
     }
-    fn to_bevy(&self) -> Color {
+    pub fn to_bevy(&self) -> Color {
         Color::srgb(self.r, self.g, self.b)
     }
 }
@@ -133,7 +133,9 @@ pub struct CurrentFile(pub Option<std::path::PathBuf>);
 /// Pending file dialog result from background thread. Check each frame.
 /// Wrapped in Mutex because Receiver is Send but not Sync.
 #[derive(Resource, Default)]
-pub struct PendingFileDialog(pub std::sync::Mutex<Option<std::sync::mpsc::Receiver<FileDialogResult>>>);
+pub struct PendingFileDialog(
+    pub std::sync::Mutex<Option<std::sync::mpsc::Receiver<FileDialogResult>>>,
+);
 
 /// Deferred load path. Set by egui/file-dialog; processed in Update to avoid B0001.
 #[derive(Resource, Default)]
@@ -145,17 +147,11 @@ pub enum FileDialogResult {
 }
 
 fn is_save_modifier_pressed(keys: &ButtonInput<KeyCode>) -> bool {
-    keys.pressed(KeyCode::ControlLeft)
-        || keys.pressed(KeyCode::ControlRight)
-        || keys.pressed(KeyCode::SuperLeft)
-        || keys.pressed(KeyCode::SuperRight)
+    crate::core::helpers::ctrl_or_cmd_pressed(keys)
 }
 
 /// Extract camera prefs from (Transform, Projection) for serialization.
-pub fn camera_prefs_from_parts(
-    transform: &Transform,
-    proj: &Projection,
-) -> SerializedCameraPrefs {
+pub fn camera_prefs_from_parts(transform: &Transform, proj: &Projection) -> SerializedCameraPrefs {
     let scale = match proj {
         Projection::Orthographic(o) => o.scale,
         _ => 1.0,
@@ -221,7 +217,7 @@ pub fn save_to_path(
 pub fn load_from_path(
     path: &Path,
     mut commands: Commands,
-    mut spatial_index: ResMut<crate::resources::SpatialIndex>,
+    mut spatial_index: ResMut<crate::core::resources::SpatialIndex>,
     mut current_file: ResMut<CurrentFile>,
     node_query: &Query<Entity, With<CanvasNode>>,
     edge_entity_query: &Query<Entity, With<Edge>>,
@@ -315,7 +311,7 @@ pub fn process_pending_load_system(
     mut pending: ResMut<PendingLoad>,
     mut recent: ResMut<RecentFiles>,
     commands: Commands,
-    spatial_index: ResMut<crate::resources::SpatialIndex>,
+    spatial_index: ResMut<crate::core::resources::SpatialIndex>,
     current_file: ResMut<CurrentFile>,
     mut camera_query: Query<(&mut Transform, &mut Projection), With<MainCamera>>,
     node_query: Query<Entity, With<CanvasNode>>,
@@ -425,14 +421,22 @@ mod tests {
                     x: 10.0,
                     y: 20.0,
                     text: "node1".to_string(),
-                    color: SerializedColor { r: 0.5, g: 0.6, b: 0.7 },
+                    color: SerializedColor {
+                        r: 0.5,
+                        g: 0.6,
+                        b: 0.7,
+                    },
                 },
                 SerializableNode {
                     id: 1,
                     x: 100.0,
                     y: 200.0,
                     text: "node2".to_string(),
-                    color: SerializedColor { r: 0.7, g: 0.85, b: 0.95 },
+                    color: SerializedColor {
+                        r: 0.7,
+                        g: 0.85,
+                        b: 0.95,
+                    },
                 },
             ],
             edges: vec![SerializableEdge {
@@ -459,7 +463,7 @@ mod tests {
 pub fn load_canvas_system(
     keys: Res<ButtonInput<KeyCode>>,
     commands: Commands,
-    spatial_index: ResMut<crate::resources::SpatialIndex>,
+    spatial_index: ResMut<crate::core::resources::SpatialIndex>,
     current_file: ResMut<CurrentFile>,
     mut camera_query: Query<(&mut Transform, &mut Projection), With<MainCamera>>,
     node_query: Query<Entity, With<CanvasNode>>,
@@ -471,7 +475,10 @@ pub fn load_canvas_system(
 
     let path = std::path::Path::new(WORKSPACE_PATH);
     if !path.exists() {
-        warn!("[LOAD] {} not found (save first with Ctrl+S / Cmd+S)", WORKSPACE_PATH);
+        warn!(
+            "[LOAD] {} not found (save first with Ctrl+S / Cmd+S)",
+            WORKSPACE_PATH
+        );
         return;
     }
 

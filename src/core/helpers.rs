@@ -1,9 +1,32 @@
 //! Utility functions.
 
+/// Returns true if either Shift key is held down.
+pub fn shift_pressed(keys: &bevy::prelude::ButtonInput<bevy::prelude::KeyCode>) -> bool {
+    use bevy::prelude::KeyCode;
+    keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight)
+}
+
+/// Returns true if either Ctrl key is held down.
+pub fn ctrl_pressed(keys: &bevy::prelude::ButtonInput<bevy::prelude::KeyCode>) -> bool {
+    use bevy::prelude::KeyCode;
+    keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight)
+}
+
+/// Returns true if Ctrl or Cmd (Super) is held — the platform save modifier.
+pub fn ctrl_or_cmd_pressed(keys: &bevy::prelude::ButtonInput<bevy::prelude::KeyCode>) -> bool {
+    use bevy::prelude::KeyCode;
+    keys.pressed(KeyCode::ControlLeft)
+        || keys.pressed(KeyCode::ControlRight)
+        || keys.pressed(KeyCode::SuperLeft)
+        || keys.pressed(KeyCode::SuperRight)
+}
+
 use bevy::prelude::*;
 use bevy::text::{Justify, LineBreak, TextBounds};
 
-use crate::components::{CanvasNode, Edge, NodeColor, NodeMainSprite, Selected, TextData, TextLabel};
+use crate::core::components::{
+    CanvasNode, Edge, NodeColor, NodeMainSprite, Selected, TextData, TextLabel,
+};
 
 /// Node size and shadow offset.
 pub const NODE_SIZE: Vec2 = Vec2::new(160.0, 120.0);
@@ -13,16 +36,18 @@ const SHADOW_SIZE: Vec2 = Vec2::new(168.0, 128.0);
 /// Text area inside node (padding from edges). Enables multi-line wrapping.
 const TEXT_BOUNDS: Vec2 = Vec2::new(150.0, 110.0);
 
-/// Dark slate node color.
-pub const NODE_COLOR: Color = Color::srgb(0.38, 0.44, 0.52);
 /// Drop shadow color.
 const SHADOW_COLOR: Color = Color::srgb(0.12, 0.14, 0.18);
+
+/// Node text color (light gray on dark nodes).
+const TEXT_COLOR: Color = Color::srgb(0.95, 0.96, 0.98);
 
 /// Spawn a new canvas node at the given position with shadow and centered text.
 pub fn spawn_canvas_node(
     commands: &mut Commands,
     position: Vec2,
     text: impl Into<String>,
+    color: Color,
     selected: bool,
 ) -> Entity {
     let content: String = text.into();
@@ -30,8 +55,10 @@ pub fn spawn_canvas_node(
         Transform::from_xyz(position.x, position.y, 0.0),
         Visibility::default(),
         CanvasNode,
-        TextData { content: content.clone() },
-        NodeColor(NODE_COLOR),
+        TextData {
+            content: content.clone(),
+        },
+        NodeColor(color),
     ));
     if selected {
         entity_cmd.insert(Selected);
@@ -43,14 +70,17 @@ pub fn spawn_canvas_node(
                 Transform::from_xyz(SHADOW_OFFSET.x, SHADOW_OFFSET.y, -0.1),
             ));
             parent.spawn((
-                Sprite::from_color(NODE_COLOR, NODE_SIZE),
+                Sprite::from_color(color, NODE_SIZE),
                 Transform::from_xyz(0.0, 0.0, 0.0),
                 NodeMainSprite,
             ));
             parent.spawn((
                 Text2d::new(content),
-                TextFont { font_size: 15.0, ..default() },
-                TextColor(Color::srgb(0.95, 0.96, 0.98)),
+                TextFont {
+                    font_size: 15.0,
+                    ..default()
+                },
+                TextColor(TEXT_COLOR),
                 TextLayout::new(Justify::Center, LineBreak::WordBoundary),
                 TextBounds::from(TEXT_BOUNDS),
                 Transform::from_xyz(0.0, 0.0, 1.0),
@@ -60,7 +90,7 @@ pub fn spawn_canvas_node(
         .id()
 }
 
-/// Spawn a node with a specific color (used by load_from_path).
+/// Convenience wrapper for spawning an unselected node at (x, y).
 pub fn spawn_node_with_color(
     commands: &mut Commands,
     x: f32,
@@ -68,35 +98,7 @@ pub fn spawn_node_with_color(
     text: &str,
     color: Color,
 ) -> Entity {
-    commands
-        .spawn((
-            Transform::from_xyz(x, y, 0.0),
-            Visibility::default(),
-            CanvasNode,
-            TextData { content: text.to_string() },
-            NodeColor(color),
-        ))
-        .with_children(|parent| {
-            parent.spawn((
-                Sprite::from_color(SHADOW_COLOR, SHADOW_SIZE),
-                Transform::from_xyz(SHADOW_OFFSET.x, SHADOW_OFFSET.y, -0.1),
-            ));
-            parent.spawn((
-                Sprite::from_color(color, NODE_SIZE),
-                Transform::from_xyz(0.0, 0.0, 0.0),
-                NodeMainSprite,
-            ));
-            parent.spawn((
-                Text2d::new(text.to_string()),
-                TextFont { font_size: 15.0, ..default() },
-                TextColor(Color::srgb(0.95, 0.96, 0.98)),
-                TextLayout::new(Justify::Center, LineBreak::WordBoundary),
-                TextBounds::from(TEXT_BOUNDS),
-                Transform::from_xyz(0.0, 0.0, 1.0),
-                TextLabel,
-            ));
-        })
-        .id()
+    spawn_canvas_node(commands, Vec2::new(x, y), text, color, false)
 }
 
 /// Delete a node and all edges connected to it.

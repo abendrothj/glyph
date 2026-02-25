@@ -2,8 +2,8 @@
 
 use bevy::prelude::*;
 
-use crate::components::{CanvasNode, GridCell};
-use crate::resources::SpatialIndex;
+use crate::core::components::{CanvasNode, GridCell};
+use crate::core::resources::SpatialIndex;
 
 /// Keeps SpatialIndex in sync with CanvasNode transforms. Runs in PostUpdate.
 pub fn update_spatial_index_system(

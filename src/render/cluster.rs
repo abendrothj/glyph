@@ -12,8 +12,8 @@
 
 use bevy::prelude::*;
 
-use crate::components::{CanvasNode, SourceLocation};
-use crate::helpers::NODE_SIZE;
+use crate::core::components::{CanvasNode, SourceLocation};
+use crate::core::helpers::NODE_SIZE;
 
 /// Marker on the colored backdrop sprite child of a crawled node.
 #[derive(Component)]

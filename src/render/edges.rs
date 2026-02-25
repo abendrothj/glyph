@@ -3,8 +3,8 @@
 use bevy::prelude::*;
 use std::f32::consts::PI;
 
-use crate::components::{Edge, EdgeLabel, Selected, TextData, TextLabel, TracedPath};
-use crate::state::InputMode;
+use crate::core::components::{Edge, EdgeLabel, Selected, TextData, TextLabel, TracedPath};
+use crate::core::state::InputMode;
 
 /// Number of segments for approximating Bezier curves.
 const CURVE_SEGMENTS: usize = 24;
@@ -22,15 +22,18 @@ fn bezier_tangent(p0: Vec2, p1: Vec2, p2: Vec2, t: f32) -> Vec2 {
 }
 
 /// Draw curved edges using quadratic Bezier. Control point offset perpendicular for clear routing.
+/// Color for traced/highlighted edges and node outlines.
+const TRACED_COLOR: Color = Color::srgb(1.0, 0.2, 0.2);
+/// Default edge color (muted blue).
+const DEFAULT_EDGE_COLOR: Color = Color::srgb(0.22, 0.32, 0.48);
+
 /// Edges between the same node pair alternate curve direction for efficient, non-overlapping layout.
 pub fn draw_edges_system(
     mut gizmos: Gizmos,
     edge_query: Query<(Entity, &Edge, Option<&TracedPath>)>,
     transform_query: Query<&Transform>,
 ) {
-    let default_edge_color = Color::srgb(0.22, 0.32, 0.48);
-    let traced_edge_color = Color::srgb(1.0, 0.2, 0.2); // Bright red
-                                                        // Group edges by (source, target) so we alternate direction within each pair
+    // Group edges by (source, target) so we alternate direction within each pair
     let mut groups: std::collections::HashMap<(Entity, Entity), Vec<(Entity, bool)>> =
         std::collections::HashMap::new();
     for (entity, edge, traced) in &edge_query {
@@ -57,9 +60,9 @@ pub fn draw_edges_system(
         let perp = Vec2::new(-dir.y, dir.x);
         for (idx, (_, is_traced)) in entities.iter().enumerate() {
             let color = if *is_traced {
-                traced_edge_color
+                TRACED_COLOR
             } else {
-                default_edge_color
+                DEFAULT_EDGE_COLOR
             };
             let sign = if idx % 2 == 0 { 1.0 } else { -1.0 };
             let p1 = mid + perp * curve_mag * sign;
@@ -207,7 +210,7 @@ pub fn draw_selection_system(
     mut gizmos: Gizmos,
     selected_query: Query<&Transform, With<Selected>>,
     traced_nodes: Query<&Transform, With<TracedPath>>,
-    selected_edge: Res<crate::resources::SelectedEdge>,
+    selected_edge: Res<crate::core::resources::SelectedEdge>,
     edge_query: Query<(Entity, &Edge)>,
     node_transform_query: Query<&Transform, Without<EdgeLabel>>,
     state: Res<State<InputMode>>,
@@ -254,7 +257,7 @@ pub fn draw_selection_system(
         gizmos.rect_2d(
             Isometry2d::from_translation(transform.translation.truncate()),
             Vec2::new(170.0, 130.0),
-            Color::srgb(1.0, 0.2, 0.2), // Bright red
+            TRACED_COLOR,
         );
     }
 

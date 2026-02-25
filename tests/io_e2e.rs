@@ -1,11 +1,11 @@
 //! E2E tests for save/load: save round-trip, load from file, verify.
 
 use bevy::prelude::*;
-use glyph::components::{CanvasNode, Edge, MainCamera, NodeColor, TextData};
-use glyph::helpers::spawn_node_with_color;
-use glyph::io::{process_pending_load_system, save_to_path, CurrentFile, PendingLoad, RecentFiles};
-use glyph::resources::SpatialIndex;
-use glyph::spatial::{spatial_index_cleanup_system, update_spatial_index_system};
+use glyph::core::components::{CanvasNode, Edge, MainCamera, NodeColor, TextData};
+use glyph::core::helpers::spawn_node_with_color;
+use glyph::io::file_io::{process_pending_load_system, save_to_path, CurrentFile, PendingLoad, RecentFiles};
+use glyph::core::resources::SpatialIndex;
+use glyph::core::spatial::{spatial_index_cleanup_system, update_spatial_index_system};
 use std::fs;
 use std::path::PathBuf;
 
@@ -101,7 +101,7 @@ fn e2e_load_restores_nodes_and_edges() {
     assert_eq!(edges.len(), 1);
     assert_eq!(edges[0].label.as_deref(), Some("calls"));
 
-    let recent = world.resource::<glyph::io::RecentFiles>();
+    let recent = world.resource::<glyph::io::file_io::RecentFiles>();
     assert!(!recent.0.is_empty());
     assert_eq!(recent.0[0], path);
 }

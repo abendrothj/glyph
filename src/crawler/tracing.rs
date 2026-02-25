@@ -1,4 +1,4 @@
-use crate::components::{CanvasNode, Edge, TracedPath};
+use crate::core::components::{CanvasNode, Edge, TracedPath};
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
 
@@ -78,8 +78,8 @@ pub fn find_traced_paths(
 pub fn handle_trace_requests(
     mut commands: Commands,
     mut trace_events: MessageReader<TraceRequest>,
-    mut status: ResMut<crate::resources::StatusMessage>,
-    node_query: Query<(Entity, &crate::components::TextData), With<CanvasNode>>,
+    mut status: ResMut<crate::core::resources::StatusMessage>,
+    node_query: Query<(Entity, &crate::core::components::TextData), With<CanvasNode>>,
     edge_query: Query<(Entity, &Edge)>,
     traced_query: Query<Entity, With<TracedPath>>,
 ) {

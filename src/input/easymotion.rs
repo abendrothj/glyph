@@ -3,13 +3,13 @@
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
-use crate::camera::viewport_world_bounds;
-use crate::components::{CanvasNode, Edge, JumpTag, MainCamera, Selected};
-use crate::helpers::keycode_to_char;
-use crate::input::EasymotionConnectSource;
-use crate::rendering::edge_label_world_pos;
-use crate::resources::{JumpMap, SelectedEdge, SpatialIndex};
-use crate::state::InputMode;
+use crate::input::camera::viewport_world_bounds;
+use crate::core::components::{CanvasNode, Edge, JumpTag, MainCamera, Selected};
+use crate::core::helpers::keycode_to_char;
+use crate::input::vim::EasymotionConnectSource;
+use crate::render::edges::edge_label_world_pos;
+use crate::core::resources::{JumpMap, SelectedEdge, SpatialIndex};
+use crate::core::state::InputMode;
 
 /// What easymotion is targeting: nodes (f, ce) or edges for label edit (ge).
 #[derive(Resource, Default, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +20,8 @@ pub enum EasymotionTarget {
 }
 
 const TAG_CHARS: &str = "abcdefghijklmnopqrstuvwxyz";
+/// Yellow highlight color for easymotion jump labels.
+const TAG_LABEL_COLOR: Color = Color::srgb(1.0, 0.85, 0.1);
 
 /// Sort order for jump tags: top-to-bottom, then left-to-right.
 /// This makes tag assignment spatially predictable — the top-left node is always
@@ -104,8 +106,11 @@ pub fn jump_tag_setup(
             jump_map.char_to_entity.insert(tag_char, *edge_entity);
             commands.spawn((
                 Text2d::new(tag_char.to_uppercase().to_string()),
-                TextFont { font_size: 28.0, ..default() },
-                TextColor(Color::srgb(1.0, 0.85, 0.1)),
+                TextFont {
+                    font_size: 28.0,
+                    ..default()
+                },
+                TextColor(TAG_LABEL_COLOR),
                 Transform::from_translation(label_pos.extend(2.0)),
                 JumpTag,
             ));
@@ -149,8 +154,11 @@ pub fn jump_tag_setup(
             let label_pos = Vec3::new(pos.x, pos.y + 70.0, 2.0);
             commands.spawn((
                 Text2d::new(tag_char.to_uppercase().to_string()),
-                TextFont { font_size: 28.0, ..default() },
-                TextColor(Color::srgb(1.0, 0.85, 0.1)),
+                TextFont {
+                    font_size: 28.0,
+                    ..default()
+                },
+                TextColor(TAG_LABEL_COLOR),
                 Transform::from_translation(label_pos),
                 JumpTag,
             ));
@@ -176,7 +184,7 @@ pub fn vim_easymotion_system(
     mut commands: Commands,
     selected_query: Query<Entity, With<Selected>>,
 ) {
-    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    let ctrl = crate::core::helpers::ctrl_pressed(&keys);
     if keys.just_pressed(KeyCode::Escape) || (ctrl && keys.just_pressed(KeyCode::BracketLeft)) {
         connect_source.0 = None;
         selected_edge.0 = None;
@@ -198,7 +206,10 @@ pub fn vim_easymotion_system(
                 commands.entity(prev).remove::<Selected>();
             }
             next_state.set(InputMode::VimInsert);
-            info!("[EASYMOTION] Edge label {:?} via '{}' → VimInsert", target_entity, tag_char);
+            info!(
+                "[EASYMOTION] Edge label {:?} via '{}' → VimInsert",
+                target_entity, tag_char
+            );
             return;
         }
 
@@ -221,7 +232,10 @@ pub fn vim_easymotion_system(
                 commands.entity(prev).remove::<Selected>();
             }
             commands.entity(target_entity).insert(Selected);
-            info!("[EASYMOTION] Jumped to {:?} via '{}'", target_entity, tag_char);
+            info!(
+                "[EASYMOTION] Jumped to {:?} via '{}'",
+                target_entity, tag_char
+            );
         }
         next_state.set(InputMode::VimNormal);
         return;

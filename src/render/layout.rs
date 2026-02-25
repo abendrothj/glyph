@@ -2,7 +2,7 @@
 
 use bevy::prelude::*;
 
-use crate::components::{CanvasNode, Dragging, Edge};
+use crate::core::components::{CanvasNode, Dragging, Edge};
 
 /// When true, force-directed layout runs each frame to untangle nodes.
 #[derive(Resource, Default)]

@@ -3,11 +3,11 @@
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
-use crate::components::{CanvasNode, Dragging, Edge, MainCamera, Selected};
-use crate::rendering::{edge_label_world_pos, LABEL_HIT_HALF};
-use crate::resources::SelectedEdge;
-use crate::helpers::spawn_canvas_node;
-use crate::state::InputMode;
+use crate::core::components::{CanvasNode, Dragging, Edge, MainCamera, Selected};
+use crate::core::helpers::spawn_canvas_node;
+use crate::render::edges::{edge_label_world_pos, LABEL_HIT_HALF};
+use crate::core::resources::SelectedEdge;
+use crate::core::state::InputMode;
 
 /// Tracks the source node when drawing an edge (Shift+drag from node).
 #[derive(Resource, Default)]
@@ -77,6 +77,7 @@ pub fn mouse_selection_system(
     dragging_q: Query<Entity, With<Dragging>>,
     mut next_state: ResMut<NextState<InputMode>>,
     current_state: Res<State<InputMode>>,
+    config: Res<crate::core::config::GlyphConfig>,
 ) {
     if !mouse_buttons.just_pressed(MouseButton::Left) {
         return;
@@ -102,7 +103,7 @@ pub fn mouse_selection_system(
         return;
     };
 
-    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    let shift = crate::core::helpers::shift_pressed(&keys);
 
     // Edge label hit-test first (before nodes). Click on label area selects edge for inline editing.
     let mut groups: std::collections::HashMap<(Entity, Entity), Vec<Entity>> =
@@ -190,7 +191,7 @@ pub fn mouse_selection_system(
         for prev in &selected_q {
             commands.entity(prev).remove::<Selected>();
         }
-        spawn_canvas_node(&mut commands, world_pos, "", true);
+        spawn_canvas_node(&mut commands, world_pos, "", config.node_color(), true);
         next_state.set(InputMode::VimInsert);
         info!("[CREATE] double-click → new node at {:?}", world_pos);
         last_empty.time = 0.0; // reset so third click doesn't create another

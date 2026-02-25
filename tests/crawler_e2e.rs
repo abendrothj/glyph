@@ -4,11 +4,11 @@
 //! edge connections, and node labels (visual structure).
 
 use bevy::prelude::*;
-use glyph::components::{Edge, TextData};
+use glyph::core::components::{Edge, TextData};
 use glyph::crawler::{handle_crawl_requests, CrawlRequest};
-use glyph::layout::ForceLayoutActive;
-use glyph::resources::SpatialIndex;
-use glyph::spatial::{spatial_index_cleanup_system, update_spatial_index_system};
+use glyph::render::layout::ForceLayoutActive;
+use glyph::core::resources::SpatialIndex;
+use glyph::core::spatial::{spatial_index_cleanup_system, update_spatial_index_system};
 use std::fs;
 
 fn crawler_e2e_app() -> App {
@@ -16,6 +16,8 @@ fn crawler_e2e_app() -> App {
     app.add_plugins(MinimalPlugins)
         .init_resource::<SpatialIndex>()
         .init_resource::<ForceLayoutActive>()
+        .init_resource::<glyph::crawler::WatchState>()
+        .init_resource::<glyph::core::resources::StatusMessage>()
         .add_message::<CrawlRequest>()
         .add_systems(
             PostUpdate,

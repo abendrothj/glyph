@@ -6,15 +6,15 @@ use bevy::window::PrimaryWindow;
 use bevy_egui::{egui, EguiContexts};
 use std::sync::mpsc;
 
-use crate::components::{CanvasNode, Edge, MainCamera, Selected};
-use crate::helpers::spawn_canvas_node;
-use crate::io::{
+use crate::core::components::SourceLocation;
+use crate::core::components::{CanvasNode, Edge, MainCamera, Selected};
+use crate::core::helpers::spawn_canvas_node;
+use crate::core::resources::SpatialIndex;
+use crate::core::state::InputMode;
+use crate::io::file_io::{
     add_to_recent, camera_prefs_from_parts, save_to_path, workflows_dir, CurrentFile,
     FileDialogResult, PendingFileDialog, PendingLoad, RecentFiles, WORKSPACE_PATH,
 };
-use crate::components::SourceLocation;
-use crate::resources::SpatialIndex;
-use crate::state::InputMode;
 
 /// Command palette state. Cmd+K toggles.
 #[derive(Resource, Default)]
@@ -47,10 +47,9 @@ pub fn toggle_command_palette_system(
             palette.needs_initial_focus = true;
         }
     }
-    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    let ctrl = crate::core::helpers::ctrl_pressed(&keys);
     if palette.is_open
-        && (keys.just_pressed(KeyCode::Escape)
-            || (ctrl && keys.just_pressed(KeyCode::BracketLeft)))
+        && (keys.just_pressed(KeyCode::Escape) || (ctrl && keys.just_pressed(KeyCode::BracketLeft)))
     {
         palette.is_open = false;
     }
@@ -64,9 +63,14 @@ pub fn ui_top_bar_system(
     mut pending_load: ResMut<PendingLoad>,
     current_file: Res<CurrentFile>,
     recent: Res<RecentFiles>,
-    mut force_layout: ResMut<crate::layout::ForceLayoutActive>,
+    mut force_layout: ResMut<crate::render::layout::ForceLayoutActive>,
     node_data_query: Query<
-        (Entity, &Transform, &crate::components::TextData, &crate::components::NodeColor),
+        (
+            Entity,
+            &Transform,
+            &crate::core::components::TextData,
+            &crate::core::components::NodeColor,
+        ),
         With<CanvasNode>,
     >,
     edge_query: Query<(Entity, &Edge)>,
@@ -223,7 +227,12 @@ pub fn process_pending_file_dialog_system(
     mut current_file: ResMut<CurrentFile>,
     mut recent: ResMut<RecentFiles>,
     node_data_query: Query<
-        (Entity, &Transform, &crate::components::TextData, &crate::components::NodeColor),
+        (
+            Entity,
+            &Transform,
+            &crate::core::components::TextData,
+            &crate::core::components::NodeColor,
+        ),
         With<CanvasNode>,
     >,
     edge_query: Query<(Entity, &Edge)>,
@@ -279,20 +288,22 @@ pub fn ui_command_palette_system(
     mut spatial_index: ResMut<SpatialIndex>,
     mut current_file: ResMut<CurrentFile>,
     mut recent: ResMut<RecentFiles>,
-    mut next_state: ResMut<NextState<crate::state::InputMode>>,
-    node_query: Query<Entity, With<CanvasNode>>,
+    mut next_state: ResMut<NextState<crate::core::state::InputMode>>,
     edge_query: Query<(Entity, &Edge)>,
     node_data_query: Query<
-        (Entity, &Transform, &crate::components::TextData, &crate::components::NodeColor),
+        (
+            Entity,
+            &Transform,
+            &crate::core::components::TextData,
+            &crate::core::components::NodeColor,
+        ),
         With<CanvasNode>,
     >,
     selected_q: Query<Entity, With<Selected>>,
     window_q: Query<&Window, With<PrimaryWindow>>,
-    camera_full_q: Query<
-        (&Transform, &Projection, &Camera, &GlobalTransform),
-        With<MainCamera>,
-    >,
+    camera_full_q: Query<(&Transform, &Projection, &Camera, &GlobalTransform), With<MainCamera>>,
     mut crawl_events: MessageWriter<crate::crawler::CrawlRequest>,
+    config: Res<crate::core::config::GlyphConfig>,
 ) {
     if !palette.is_open {
         return;
@@ -460,8 +471,8 @@ pub fn ui_command_palette_system(
                         let (_, _, cam, xform) = camera_full_q.single().ok()?;
                         cam.viewport_to_world_2d(xform, center).ok()
                     }).unwrap_or(Vec2::ZERO);
-                    spawn_canvas_node(&mut commands, pos, "", true);
-                    next_state.set(crate::state::InputMode::VimInsert);
+                    spawn_canvas_node(&mut commands, pos, "", config.node_color(), true);
+                    next_state.set(crate::core::state::InputMode::VimInsert);
                     palette.is_open = false;
                     info!("[CREATE] Add Node at {:?}", pos);
                 }
@@ -490,7 +501,8 @@ pub fn ui_command_palette_system(
                 let btn = ui.button("Clear Canvas");
                 let enter = std::mem::take(&mut first_remaining);
                 if (btn.clicked() || enter) && !handled {
-                    for entity in node_query.iter().collect::<Vec<_>>() {
+                    let to_despawn = node_data_query.iter().map(|(e, ..)| e).collect::<Vec<_>>();
+                    for entity in to_despawn {
                         commands.entity(entity).despawn();
                     }
                     for (e, _) in edge_query.iter() {
@@ -532,9 +544,14 @@ fn execute_vim_command(
     current_file: &mut CurrentFile,
     recent: &mut RecentFiles,
     pending_load: &mut PendingLoad,
-    status: &mut crate::resources::StatusMessage,
+    status: &mut crate::core::resources::StatusMessage,
     node_query: &Query<
-        (Entity, &Transform, &crate::components::TextData, &crate::components::NodeColor),
+        (
+            Entity,
+            &Transform,
+            &crate::core::components::TextData,
+            &crate::core::components::NodeColor,
+        ),
         With<CanvasNode>,
     >,
     edge_query: &Query<(Entity, &Edge)>,
@@ -625,14 +642,20 @@ fn execute_vim_command(
 pub fn vim_cmdline_system(
     keys: Res<ButtonInput<Key>>,
     keycodes: Res<ButtonInput<KeyCode>>,
-    mut next_state: ResMut<NextState<crate::state::InputMode>>,
+    mut next_state: ResMut<NextState<crate::core::state::InputMode>>,
     mut cmdline: ResMut<VimCmdLine>,
     mut current_file: ResMut<CurrentFile>,
     mut recent: ResMut<RecentFiles>,
     mut pending_load: ResMut<PendingLoad>,
-    mut status: ResMut<crate::resources::StatusMessage>,
+    mut status: ResMut<crate::core::resources::StatusMessage>,
+    mut finder: ResMut<crate::ui::fuzzy::FuzzyFinderState>,
     node_query: Query<
-        (Entity, &Transform, &crate::components::TextData, &crate::components::NodeColor),
+        (
+            Entity,
+            &Transform,
+            &crate::core::components::TextData,
+            &crate::core::components::NodeColor,
+        ),
         With<CanvasNode>,
     >,
     edge_query: Query<(Entity, &Edge)>,
@@ -642,11 +665,9 @@ pub fn vim_cmdline_system(
     let ctrl = keycodes.pressed(KeyCode::ControlLeft) || keycodes.pressed(KeyCode::ControlRight);
 
     // Cancel: Esc or Ctrl+[
-    if keys.just_pressed(Key::Escape)
-        || (ctrl && keycodes.just_pressed(KeyCode::BracketLeft))
-    {
+    if keys.just_pressed(Key::Escape) || (ctrl && keycodes.just_pressed(KeyCode::BracketLeft)) {
         cmdline.text.clear();
-        next_state.set(crate::state::InputMode::VimNormal);
+        next_state.set(crate::core::state::InputMode::VimNormal);
         info!("→ VimNormal (cmdline cancelled)");
         return;
     }
@@ -655,8 +676,22 @@ pub fn vim_cmdline_system(
     if keys.just_pressed(Key::Enter) {
         let text = cmdline.text.trim().to_string();
         cmdline.text.clear();
-        next_state.set(crate::state::InputMode::VimNormal);
+        next_state.set(crate::core::state::InputMode::VimNormal);
         info!("→ VimNormal (executed: :{})", text);
+
+        // Handle :find / :search — open fuzzy finder with optional query
+        let (cmd, arg) = match text.find(' ') {
+            Some(pos) => (&text[..pos], text[pos + 1..].trim()),
+            None => (text.as_str(), ""),
+        };
+        if cmd == "find" || cmd == "search" {
+            finder.query = arg.to_string();
+            finder.is_open = true;
+            finder.needs_focus = true;
+            info!("[CMD] :{} → opened fuzzy finder", cmd);
+            return;
+        }
+
         execute_vim_command(
             &text,
             &mut current_file,
@@ -713,7 +748,7 @@ pub fn ui_legend_system(
         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 40.0))
         .show(ctx, |ui| {
             for file in &files {
-                let (r, g, b) = crate::cluster::palette_rgb(file);
+                let (r, g, b) = crate::render::cluster::palette_rgb(file);
                 let swatch = egui::Color32::from_rgb(
                     (r * 255.0) as u8,
                     (g * 255.0) as u8,
@@ -726,10 +761,8 @@ pub fn ui_legend_system(
                     .unwrap_or(file.as_str());
                 ui.horizontal(|ui| {
                     // Colored square swatch
-                    let (rect, _) = ui.allocate_exact_size(
-                        egui::vec2(14.0, 14.0),
-                        egui::Sense::hover(),
-                    );
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
                     ui.painter().rect_filled(rect, 3.0, swatch);
                     ui.label(egui::RichText::new(basename).small());
                 });
@@ -740,7 +773,7 @@ pub fn ui_legend_system(
 /// Decrement the status message timer each frame so messages fade out.
 pub fn status_message_tick_system(
     time: Res<Time>,
-    mut status: ResMut<crate::resources::StatusMessage>,
+    mut status: ResMut<crate::core::resources::StatusMessage>,
 ) {
     if status.timer > 0.0 {
         status.timer = (status.timer - time.delta_secs()).max(0.0);
@@ -752,9 +785,9 @@ pub fn status_message_tick_system(
 /// A status message (crawl result / error) is shown on the right when active.
 pub fn ui_bottom_bar_system(
     mut contexts: EguiContexts,
-    state: Res<State<crate::state::InputMode>>,
+    state: Res<State<crate::core::state::InputMode>>,
     cmdline: Res<VimCmdLine>,
-    status: Res<crate::resources::StatusMessage>,
+    status: Res<crate::core::resources::StatusMessage>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
@@ -765,35 +798,35 @@ pub fn ui_bottom_bar_system(
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 match state.get() {
-                    crate::state::InputMode::VimCommand => {
+                    crate::core::state::InputMode::VimCommand => {
                         ui.label(
                             egui::RichText::new(format!(":{}|", cmdline.text))
                                 .monospace()
                                 .color(egui::Color32::WHITE),
                         );
                     }
-                    crate::state::InputMode::VimNormal => {
+                    crate::core::state::InputMode::VimNormal => {
                         ui.label(
                             egui::RichText::new("-- NORMAL --")
                                 .strong()
                                 .color(egui::Color32::WHITE),
                         );
                     }
-                    crate::state::InputMode::VimInsert => {
+                    crate::core::state::InputMode::VimInsert => {
                         ui.label(
                             egui::RichText::new("-- INSERT --")
                                 .strong()
                                 .color(egui::Color32::from_rgb(100, 200, 120)),
                         );
                     }
-                    crate::state::InputMode::VimEasymotion => {
+                    crate::core::state::InputMode::VimEasymotion => {
                         ui.label(
                             egui::RichText::new("-- JUMP --")
                                 .strong()
                                 .color(egui::Color32::from_rgb(240, 200, 60)),
                         );
                     }
-                    crate::state::InputMode::Standard => {
+                    crate::core::state::InputMode::Standard => {
                         ui.label(
                             egui::RichText::new("-- STANDARD --")
                                 .strong()

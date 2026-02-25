@@ -2,8 +2,8 @@
 
 use bevy::prelude::*;
 
-use crate::components::{MainCamera, Selected};
-use crate::state::InputMode;
+use crate::core::components::{MainCamera, Selected};
+use crate::core::state::InputMode;
 
 /// Scroll-wheel zoom: adjusts the orthographic scale of the main camera.
 /// Pinch/scroll in  → scale decreases (zoom in, things appear larger).

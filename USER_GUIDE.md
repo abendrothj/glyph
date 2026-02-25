@@ -1,15 +1,16 @@
 # Glyph User Guide
 
-A reference for all keybindings, modes, and features. All primary bindings stay on the home row.
+A complete reference for all keybindings, modes, and features. All primary bindings stay on the home row.
 
 ## Modes
 
 | Mode | Description |
 |------|-------------|
-| **Vim Normal** | Default mode. Navigate, create, delete, connect. |
-| **Vim Insert** | Edit node text. Type to add, Esc to exit. |
-| **Vim Easymotion** | Jump to any visible node by typing its letter tag. |
-| **Standard** | Mouse drag mode. Click node to select and drag. |
+| **Vim Normal** | Default. Navigate, create, delete, connect. |
+| **Vim Insert** | Edit node/edge text. Type to add, Esc to exit. |
+| **Vim Easymotion** | Jump to visible node by typing its letter tag. |
+| **Vim Command** | `:` command-line for save, open, crawl. |
+| **Standard** | Mouse drag mode. Click to select and drag. |
 
 ---
 
@@ -18,22 +19,23 @@ A reference for all keybindings, modes, and features. All primary bindings stay 
 ### Movement
 | Keys | Action |
 |------|--------|
-| `h` `j` `k` `l` | Move selected node (left, down, up, right). Speed increases 2.5× when held. |
-| `f` | Enter Easymotion — jump to any visible node. |
+| `h` `j` `k` `l` | Move selected node. Accelerates 2.5× when held. |
+| `f` | Easymotion — jump to any visible node. |
+| Arrow keys | Pan camera. |
 
 ### Creating
 | Keys | Action |
 |------|--------|
 | `n` | New node at cursor (or viewport center). Enters Insert. |
-| `i` | Insert mode. If nothing selected, creates node at cursor first. |
-| `a` | Add edge + new node (from selected). Enters Insert. |
-| `yy` | Duplicate selected node. Copies text and color. Enters Insert. |
+| `i` | Insert mode. Creates node at cursor first if nothing selected. |
+| `a` | Add edge + new node from selected. Enters Insert. |
+| `yy` | Duplicate selected node with text and color. |
 
 ### Connecting
 | Keys | Action |
 |------|--------|
-| `ce` | Connect selected to existing. `c` then `e` → Easymotion, pick letter to connect. |
-| `ge` | Open Edge Labels (command palette). Edit labels for all edges. |
+| `ce` | Connect selected → existing. Easymotion picks the target. |
+| `ge` | Edit edge labels via Easymotion. |
 
 ### Deleting
 | Keys | Action |
@@ -41,24 +43,53 @@ A reference for all keybindings, modes, and features. All primary bindings stay 
 | `dd` | Delete selected node and its edges. |
 | `Delete` / `Backspace` | Same as `dd`. |
 
+### Search & Shell
+| Keys | Action |
+|------|--------|
+| `/` | **Fuzzy Finder** — search nodes by text, jump camera to match. |
+| `!` | **Shell Execute** — pipe selected node text through a shell command, spawn stdout as new connected node. |
+
+### Marks
+| Keys | Action |
+|------|--------|
+| `m` + letter | Set a named mark at the current selected node position. |
+| `'` + letter | Jump camera to a named mark. |
+
+### Command Line
+| Keys | Action |
+|------|--------|
+| `:` (Shift+;) | Enter command-line mode. |
+
 ---
 
 ## Vim Insert Mode
 
 | Keys | Action |
 |------|--------|
-| Type | Add characters to selected node. |
-| `Backspace` or `Ctrl+h` | Delete character. Hold for repeat (0.4s delay, then 50ms repeat). |
-| `Esc` or `Ctrl+[` | Return to Normal. |
+| Type | Add characters to selected node (or edge label). |
+| `Backspace` / `Ctrl+h` | Delete character. Hold for repeat (0.4s delay, then 50ms). |
+| `Esc` / `Ctrl+[` | Return to Normal. |
 
 ---
 
-## Vim Easymotion Mode
+## Vim Easymotion
 
 | Keys | Action |
 |------|--------|
-| Type letter | Jump to that node (or connect if entered via `ce`). |
-| `Esc` or `Ctrl+[` | Cancel without jumping. |
+| Type letter | Jump to that node (or connect if via `ce`). |
+| `Esc` / `Ctrl+[` | Cancel. |
+
+---
+
+## Command-Line Mode (`:`)
+
+| Command | Action |
+|---------|--------|
+| `:w [path]` | Save to current file or specified path. |
+| `:e <path>` | Open a `.glyph` file. |
+| `:crawl <path>` | Crawl codebase, generate spatial call-graph. |
+| `:crawl <path> --no-flow` | Crawl without data-flow edges. |
+| `:trace flow` | Interactive threat mapping — trace data paths. |
 
 ---
 
@@ -67,39 +98,23 @@ A reference for all keybindings, modes, and features. All primary bindings stay 
 | Action | Result |
 |--------|--------|
 | Click node | Select and start dragging. |
-| Shift+click node | Start drawing edge. Drag to target, release. |
+| Shift+click node | Start drawing edge. Drag to target. |
 | Click empty | Deselect. |
 | Double-click empty | Create node at click position. |
 
 ---
 
-## Command Palette (Cmd+K or `ge`)
+## Command Palette (`Cmd+K`)
 
 | Action | Result |
 |--------|--------|
-| Search | Filter commands and edge labels by typing. |
-| Save Workspace | Save to current file (or workspace.glyph). |
-| Load workspace.glyph | Load default workspace file. |
-| Open file... | File picker to open any .glyph file. |
-| Open path | Type a file path (e.g. /path/to/workspace.glyph) and click Open or press Enter. |
-| Add Node | Create node at viewport center. |
-| Delete Selected Node | Remove selected node and edges. |
-| Clear Canvas | Remove all nodes and edges. |
-| Edge Labels | Edit labels for each edge (A → B: [label]). |
-| :crawl [path] | Crawl a codebase to generate a Spatial Flow Graph. |
-| :trace flow | Interactive Threat Mapping to trace data flow from Source to Sink. |
-| Esc or Ctrl+[ | Close palette. |
-
----
-
-## File Menu
-
-| Item | Shortcut | Action |
-|------|----------|--------|
-| Open... | Ctrl+O / Cmd+O | Open .glyph file. |
-| Save | Ctrl+S / Cmd+S | Save to current file. |
-| Save As... | — | Save to new file. |
-| Edit → Edge Labels... | — | Open command palette. |
+| Search | Filter commands/edges by typing. |
+| Save / Load / Open | File operations. |
+| Add Node | Create at viewport center. |
+| Delete Selected | Remove node and edges. |
+| Clear Canvas | Remove everything. |
+| Edge Labels | Edit all edge labels. |
+| `Esc` / `Ctrl+[` | Close palette. |
 
 ---
 
@@ -109,18 +124,39 @@ A reference for all keybindings, modes, and features. All primary bindings stay 
 |--------|--------|
 | Scroll | Zoom in/out. |
 | Middle-click drag | Pan canvas. |
-| Space + left-drag | Pan canvas (no middle button needed). |
+| Space + left-drag | Pan (no middle button needed). |
+| `+` / `-` | Zoom in/out (keyboard). |
 | Arrow keys | Pan (hold for continuous). |
 
 ---
 
-## Project Preferences
+## Configuration (`~/.glyphrc`)
 
-Camera zoom and position are saved per project. When you save a .glyph file, the current view (pan + zoom) is stored. Loading that file restores the view.
+TOML format:
+```toml
+background_color = "#1e1e2e"   # Catppuccin Mocha Base
+node_color = "#313244"         # Catppuccin Surface0
+```
+
+Colors are hex strings. Invalid values fall back to defaults.
+
+---
+
+## CLI Options
+
+```bash
+glyph                                    # Interactive mode
+cat session.glyph | glyph               # Load JSON from stdin
+glyph --headless --export screenshot.png # Headless screenshot export
+```
+
+---
 
 ## Tips
 
 - **Home row only:** `i` `f` `ge` `n` `a` `yy` `ce` `dd` `hjkl` — no reaching.
 - **Connect flow:** Select source → `ce` → type target letter.
-- **Duplicate flow:** Select node → `yy` → edit the copy.
-- **Empty canvas:** Use `n` or `i` to create first node.
+- **Duplicate flow:** Select → `yy` → edit the copy.
+- **Pipe chain:** Select node → `!` → `wc -l` → creates word-count node connected by edge.
+- **Find anything:** `/` → type partial text → Enter jumps to best match.
+- **Camera prefs:** Zoom and position are saved per `.glyph` file.
